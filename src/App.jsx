@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 const demoWorkbook = {
   name: 'example.csvx',
@@ -59,24 +59,55 @@ function parseCSV(text) {
   return { columns: rows[0], rows: rows.slice(1) }
 }
 
+const STORED_PACKAGE_KEY = 'csvx-web.current-package'
+
 async function parseCSVX(file) {
   const entries = await readZipEntries(await file.arrayBuffer())
   const readJSON = (name) => { const body = entries.get(name); if (!body) throw new Error(`Missing ${name}`); return JSON.parse(decode(body)) }
   const manifest = readJSON('manifest.json')
   const workbook = readJSON(manifest.workbook)
+  const styleResource = workbook.styles ? readJSON(workbook.styles) : { styles: {} }
+  const styles = Array.isArray(styleResource.styles)
+    ? Object.fromEntries(styleResource.styles.map((style) => [style.id, style]))
+    : styleResource.styles || {}
   const sheets = workbook.sheets.map((entry) => {
     const csv = parseCSV(decode(entries.get(entry.path)))
     const metadata = entry.metadata ? readJSON(entry.metadata) : { cells: {} }
     return { id: entry.id, name: entry.name, ...csv, cells: metadata.cells || {}, metadata }
   })
   const source = workbook.source || null
-  return { name: file.name, version: workbook.version, sheets, source, manifest }
+  return { name: file.name, version: workbook.version, sheets, styles, source, manifest }
+}
+
+function cellStyle(metadata, styles) {
+  const style = metadata?.style ? styles?.[metadata.style] : null
+  const font = style?.font || {}
+  const fill = style?.fill || {}
+  return {
+    color: font.color || undefined,
+    backgroundColor: fill.color || undefined,
+    fontFamily: font.name ? `'${font.name}', ui-monospace, monospace` : undefined,
+    fontSize: font.size ? `${font.size}pt` : undefined,
+    fontWeight: font.bold ? 700 : undefined,
+    fontStyle: font.italic ? 'italic' : undefined,
+  }
 }
 
 function columnLabel(index) {
   let label = ''; let value = index + 1
   while (value > 0) { const remainder = (value - 1) % 26; label = String.fromCharCode(65 + remainder) + label; value = Math.floor((value - 1) / 26) }
   return label
+}
+
+function cellCoordinate(columnIndex, rowIndex) {
+  return `${columnLabel(columnIndex)}${rowIndex + 1}`
+}
+
+function cellPosition(coordinate) {
+  const match = coordinate.match(/^([A-Z]+)(\d+)$/)
+  if (!match) return { column: 0, row: 0 }
+  const column = match[1].split('').reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1
+  return { column, row: Number(match[2]) - 1 }
 }
 
 function App() {
@@ -86,12 +117,41 @@ function App() {
   const [error, setError] = useState('')
   const inputRef = useRef(null)
   const sheet = useMemo(() => workbook.sheets.find((item) => item.id === activeSheet) || workbook.sheets[0], [activeSheet, workbook])
+
+  useEffect(() => {
+    const storedPackage = localStorage.getItem(STORED_PACKAGE_KEY)
+    if (!storedPackage) return
+    try {
+      const restored = JSON.parse(storedPackage)
+      if (restored?.name && Array.isArray(restored.sheets)) {
+        setWorkbook(restored)
+        setActiveSheet(restored.sheets[0]?.id)
+      }
+    } catch {
+      localStorage.removeItem(STORED_PACKAGE_KEY)
+    }
+  }, [])
   const selectedMetadata = sheet?.cells?.[selectedCell]
-  const selectedColumn = selectedCell.match(/[A-Z]+/)?.[0] || 'A'
-  const selectedRow = Number(selectedCell.match(/\d+/)?.[0] || 1)
-  const selectedColumnIndex = selectedColumn.split('').reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1
-  const selectedValue = sheet?.rows?.[selectedRow - 1]?.[selectedColumnIndex] || ''
+  const { column: selectedColumnIndex, row: selectedRowIndex } = cellPosition(selectedCell)
+  const selectedValue = sheet?.rows?.[selectedRowIndex]?.[selectedColumnIndex] || ''
   const selectedDisplayValue = selectedMetadata?.formula || selectedValue || 'Blank cell'
+
+  function moveSelection(direction) {
+    const nextColumn = Math.max(0, Math.min(sheet.columns.length - 1, selectedColumnIndex + direction.column))
+    const nextRow = Math.max(0, Math.min(sheet.rows.length - 1, selectedRowIndex + direction.row))
+    setSelectedCell(cellCoordinate(nextColumn, nextRow))
+  }
+
+  function handleCellKeyDown(event) {
+    const directions = {
+      ArrowLeft: { column: -1, row: 0 }, ArrowRight: { column: 1, row: 0 },
+      ArrowUp: { column: 0, row: -1 }, ArrowDown: { column: 0, row: 1 },
+    }
+    const direction = directions[event.key]
+    if (!direction) return
+    event.preventDefault()
+    moveSelection(direction)
+  }
 
   async function handleOpen(event) {
     const file = event.target.files?.[0]
@@ -99,6 +159,7 @@ function App() {
     try {
       const loaded = await parseCSVX(file)
       setWorkbook(loaded); setActiveSheet(loaded.sheets[0]?.id); setSelectedCell('A1'); setError('')
+      localStorage.setItem(STORED_PACKAGE_KEY, JSON.stringify(loaded))
     } catch (loadError) { setError(loadError.message); setWorkbook(demoWorkbook) }
     event.target.value = ''
   }
@@ -125,7 +186,7 @@ function App() {
           {error && <p className="error-message" role="alert">Unable to open package: {error}</p>}
           <div className="content-header"><div><p className="eyebrow">Sheet / {sheet.name}</p><h2>{sheet.name}</h2></div><span className="read-only-badge">Read-only demo</span></div>
           <section className="formula-panel" aria-label="Cell inspector"><div className="name-box" aria-label="Selected cell">{selectedCell}</div><div className="formula-symbol" aria-hidden="true">fx</div><div className="formula-value">{selectedDisplayValue}</div></section>
-          <section className="grid-card" aria-labelledby="grid-title"><h3 id="grid-title" className="sr-only">{sheet.name} spreadsheet data</h3><div className="table-scroll"><table className="spreadsheet"><caption className="sr-only">CSV-backed data in {sheet.name}</caption><thead><tr><th scope="col" className="corner-cell" aria-label="Spreadsheet corner" />{sheet.columns.map((column, index) => <th scope="col" key={`${column}-${index}`}>{columnLabel(index)}<span className="sr-only">: {column}</span></th>)}</tr></thead><tbody>{sheet.rows.map((row, rowIndex) => <tr key={`${sheet.id}-${rowIndex}`}><th scope="row">{rowIndex + 1}</th>{sheet.columns.map((_, columnIndex) => { const coordinate = `${columnLabel(columnIndex)}${rowIndex + 1}`; const value = row[columnIndex] || ''; const metadata = sheet.cells?.[coordinate]; return <td key={coordinate}><button type="button" className={`cell-button ${selectedCell === coordinate ? 'is-selected' : ''}`} onClick={() => setSelectedCell(coordinate)} aria-label={`${coordinate}, value ${value || 'blank'}`}>{value}{metadata?.formula ? ' ƒ' : ''}</button></td> })}</tr>)}</tbody></table></div></section>
+          <section className="grid-card" aria-labelledby="grid-title"><h3 id="grid-title" className="sr-only">{sheet.name} spreadsheet data</h3><div className="table-scroll"><table className="spreadsheet"><caption className="sr-only">CSV-backed data in {sheet.name}</caption><thead><tr><th scope="col" className="corner-cell" aria-label="Spreadsheet corner" />{sheet.columns.map((column, index) => <th scope="col" key={`${column}-${index}`}>{columnLabel(index)}<span className="sr-only">: {column}</span></th>)}</tr></thead><tbody>{sheet.rows.map((row, rowIndex) => <tr key={`${sheet.id}-${rowIndex}`}><th scope="row">{rowIndex + 1}</th>{sheet.columns.map((_, columnIndex) => { const coordinate = `${columnLabel(columnIndex)}${rowIndex + 1}`; const value = row[columnIndex] || ''; const metadata = sheet.cells?.[coordinate]; return <td key={coordinate}><button type="button" style={cellStyle(metadata, workbook.styles)} className={`cell-button ${selectedCell === coordinate ? 'is-selected' : ''}`} onClick={() => setSelectedCell(coordinate)} onKeyDown={handleCellKeyDown} aria-label={`${coordinate}, value ${value || 'blank'}`}>{value}{metadata?.formula ? <span className="formula-indicator" aria-label="Formula"> ƒ</span> : null}</button></td> })}</tr>)}</tbody></table></div></section>
           <div className="status-bar" role="status"><span><strong>{sheet.rows.length}</strong> data rows</span><span><strong>{sheet.columns.length}</strong> columns</span><span className="status-spacer" /><span>{Object.keys(sheet.cells || {}).length ? 'Formulas and metadata loaded' : 'CSV data layer'}</span></div>
         </main>
       </div>

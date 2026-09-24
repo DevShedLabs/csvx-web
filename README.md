@@ -26,6 +26,11 @@ npm run build
 npm run preview
 ```
 
+## Example 
+```bash
+./bin/csvx convert ../csvx-web/example.xlsx ../csvx-web/example.csvx 
+```
+
 ## Direction
 
 The UI will remain separate from CSVX semantics. The browser application should eventually load the
