@@ -102,6 +102,7 @@ function cellStyle(metadata, styles) {
     textAlign: alignment.horizontal || undefined,
     verticalAlign: alignment.vertical || undefined,
     whiteSpace: alignment.wrapText ? 'normal' : 'nowrap',
+    padding: style?.numberFormat ? '0 var(--space-3)' : undefined,
     transform: alignment.textRotation && alignment.textRotation !== '0' ? `rotate(${alignment.textRotation}deg)` : undefined,
     paddingLeft: alignment.indent ? `${Number(alignment.indent) * 0.5}rem` : undefined,
   }
@@ -149,6 +150,7 @@ function App() {
   const { column: selectedColumnIndex, row: selectedRowIndex } = cellPosition(selectedCell)
   const selectedValue = sheet?.rows?.[selectedRowIndex]?.[selectedColumnIndex] || ''
   const selectedDisplayValue = selectedMetadata?.formula || selectedValue || 'Blank cell'
+  const selectedType = selectedMetadata?.type && selectedDisplayValue !== 'Blank cell' ? selectedMetadata.type : ''
 
   function moveSelection(direction) {
     const nextColumn = Math.max(0, Math.min(sheet.columns.length - 1, selectedColumnIndex + direction.column))
@@ -199,7 +201,7 @@ function App() {
         <main id="main-content" className="main-content" tabIndex="-1">
           {error && <p className="error-message" role="alert">Unable to open package: {error}</p>}
           <div className="content-header"><div><p className="eyebrow">Sheet / {sheet.name}</p><h2>{sheet.name}</h2></div><span className="read-only-badge">Read-only demo</span></div>
-          <section className="formula-panel" aria-label="Cell inspector"><div className="name-box" aria-label="Selected cell">{selectedCell}</div><div className="formula-symbol" aria-hidden="true">fx</div><div className="formula-value">{selectedDisplayValue}</div></section>
+          <section className="formula-panel" aria-label="Cell inspector"><div className="name-box" aria-label="Selected cell">{selectedCell}</div><div className="formula-symbol" aria-hidden="true">fx</div><div className="formula-value">{selectedDisplayValue}{selectedType ? <span className="value-type">{selectedType}</span> : null}</div></section>
           <section className="grid-card" aria-labelledby="grid-title"><h3 id="grid-title" className="sr-only">{sheet.name} spreadsheet data</h3><div className="table-scroll"><table className="spreadsheet"><caption className="sr-only">CSV-backed data in {sheet.name}</caption><thead><tr><th scope="col" className="corner-cell" aria-label="Spreadsheet corner" />{sheet.columns.map((column, index) => <th scope="col" key={`${column}-${index}`} style={{ width: sheet.columns[index]?.width ? `${sheet.columns[index].width}ch` : undefined }}>{columnLabel(index)}<span className="sr-only">: {column}</span></th>)}</tr></thead><tbody>{sheet.rows.map((row, rowIndex) => <tr key={`${sheet.id}-${rowIndex}`} style={{ height: sheet.rowHeights?.[rowIndex + 1] ? `${sheet.rowHeights[rowIndex + 1]}pt` : undefined }}><th scope="row">{rowIndex + 1}</th>{sheet.columns.map((_, columnIndex) => { const coordinate = `${columnLabel(columnIndex)}${rowIndex + 1}`; const value = row[columnIndex] || ''; const metadata = sheet.cells?.[coordinate]; return <td key={coordinate}><button type="button" style={cellStyle(metadata, workbook.styles)} className={`cell-button ${selectedCell === coordinate ? 'is-selected' : ''}`} onClick={() => setSelectedCell(coordinate)} onKeyDown={handleCellKeyDown} aria-label={`${coordinate}, value ${value || 'blank'}`}>{value}{metadata?.formula ? <span className="formula-indicator" aria-label="Formula"> ƒ</span> : null}</button></td> })}</tr>)}</tbody></table></div></section>
           <div className="status-bar" role="status"><span><strong>{sheet.rows.length}</strong> data rows</span><span><strong>{sheet.columns.length}</strong> columns</span><span className="status-spacer" /><span>{Object.keys(sheet.cells || {}).length ? 'Formulas and metadata loaded' : 'CSV data layer'}</span></div>
         </main>
