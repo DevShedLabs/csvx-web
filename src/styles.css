@@ -369,7 +369,7 @@ h1 {
 
 .spreadsheet th,
 .spreadsheet td {
-	height: 2.75rem;
+	height: 1.75rem;
 	padding: 0;
 	border-right: 0.0625rem solid var(--border);
 	border-bottom: 0.0625rem solid var(--border);

@@ -46,15 +46,23 @@ async function readZipEntries(buffer) {
 }
 
 function parseCSV(text) {
-  const rows = []; let row = []; let value = ''; let quoted = false
+  const rows = []; let row = []; let value = ''; let quoted = false; let endedLine = false
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]
-    if (character === '"') { if (quoted && text[index + 1] === '"') { value += '"'; index += 1 } else { quoted = !quoted } }
-    else if (character === ',' && !quoted) { row.push(value); value = '' }
-    else if ((character === '\n' || character === '\r') && !quoted) { if (character === '\r' && text[index + 1] === '\n') index += 1; row.push(value); value = ''; if (row.some(Boolean)) rows.push(row); row = [] }
-    else value += character
+    endedLine = false
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') { value += '"'; index += 1 } else { quoted = !quoted }
+    } else if (character === ',' && !quoted) {
+      row.push(value); value = ''
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && text[index + 1] === '\n') index += 1
+      row.push(value); value = ''; rows.push(row); row = []; endedLine = true
+    } else {
+      value += character
+    }
   }
-  if (value || row.length) { row.push(value); rows.push(row) }
+  if (value || row.length > 0 || !endedLine) { row.push(value); rows.push(row) }
+  while (rows.length > 1 && rows[rows.length - 1].every((cell) => cell === '')) rows.pop()
   if (!rows.length) throw new Error('CSV sheet has no header row')
   return { columns: rows[0], rows: rows.slice(1) }
 }
