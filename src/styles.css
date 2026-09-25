@@ -348,11 +348,13 @@ h1 {
 }
 
 .value-type {
-	text-align: right;
-    display: block;
-	float: right;
-	font-size: .5rem;
+	display: block;
+	margin-left: auto;
+	padding-left: var(--space-3);
+	color: var(--muted);
+	font-size: 0.75rem;
 	font-style: italic;
+	text-align: right;
 }
 
 .grid-card {
@@ -421,13 +423,14 @@ h1 {
 
 .formula-indicator {
 	display: inline-block;
-	color: var(--accent-strong);
-	font-size: 5px;
+	background-color: var(--accent-strong);
+	font-size: 0;
 	font-weight: 700;
 	position: absolute;
-	top: 2px;
-	right: 2px;
-	font-style: italic;
+	top: -2px;
+	right: -2px;
+	width: 4px;
+	height: 4px;
 }
 
 .cell-button.is-selected {
