@@ -344,6 +344,15 @@ h1 {
 	padding-right: var(--space-3);
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	width: 100%;
+}
+
+.value-type {
+	text-align: right;
+    display: block;
+	float: right;
+	font-size: .5rem;
+	font-style: italic;
 }
 
 .grid-card {
