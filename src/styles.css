@@ -310,6 +310,17 @@ h1 {
 	font-size: 0.75rem;
 }
 
+.formula-value {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	min-width: 0;
+	flex: 1;
+	overflow: hidden;
+	padding-right: var(--space-3);
+	white-space: nowrap;
+}
+
 .formula-panel {
 	display: flex;
 	align-items: center;
@@ -340,6 +351,7 @@ h1 {
 }
 
 .formula-value {
+	margin-left: auto;
 	overflow: hidden;
 	padding-right: var(--space-3);
 	text-overflow: ellipsis;
@@ -348,13 +360,12 @@ h1 {
 }
 
 .value-type {
-	display: block;
-	margin-left: auto;
 	padding-left: var(--space-3);
 	color: var(--muted);
 	font-size: 0.75rem;
 	font-style: italic;
 	text-align: right;
+	margin-left: auto;
 }
 
 .grid-card {
