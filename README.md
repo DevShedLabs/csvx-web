@@ -27,6 +27,9 @@ npm install
 npm run dev
 npm run build
 npm run preview
+
+# Development server uses port 5174
+npm run dev
 ```
 
 ## Example 
