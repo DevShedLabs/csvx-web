@@ -6,13 +6,16 @@ format.
 
 ## Current scope
 
-The first slice is an accessible, developer-oriented read-only workbench with:
+The first slice is an accessible, developer-oriented workbench with local editing capabilities:
 
 - Workbook and sheet navigation
 - CSV-backed spreadsheet data display
 - Cell selection with A1 coordinates
 - Package and data-layer context
 - Responsive layout and keyboard-visible focus states
+- Cell editing with Enter, F2, double-click, and Escape to cancel
+- Row context menu actions for insert-before, insert-after, and delete
+- LocalStorage persistence for edits during the demo session
 
 The current demo data is represented in the UI while the browser-side CSVX package reader is being
 added. `example.csvx` is the real CSVX package fixture for that integration.

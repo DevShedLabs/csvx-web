@@ -465,6 +465,68 @@ h1 {
 	flex: 1;
 }
 
+.cell-editor {
+	width: 100%;
+	min-height: 1.5rem;
+	padding: 0 var(--space-2);
+	border: 0.0625rem solid var(--accent);
+	color: var(--text);
+	background: var(--surface);
+	font: inherit;
+}
+
+.row-header-button {
+	width: 100%;
+	height: 100%;
+	min-height: 1.75rem;
+	padding: 0;
+	border: 0;
+	color: inherit;
+	background: transparent;
+	cursor: pointer;
+}
+
+.row-context-menu {
+	position: fixed;
+	z-index: 20;
+	min-width: 12rem;
+	padding: var(--space-2) 0;
+	border: 0.0625rem solid var(--border-strong);
+	border-radius: var(--radius);
+	background: var(--surface);
+	box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.18);
+}
+
+.context-menu-label {
+	padding: var(--space-2) var(--space-4);
+	margin: 0;
+	border-bottom: 0.0625rem solid var(--border);
+	color: var(--muted);
+	font-size: 0.75rem;
+	font-weight: 700;
+}
+
+.row-context-menu button {
+	display: block;
+	width: 100%;
+	min-height: 2.5rem;
+	padding: 0 var(--space-4);
+	border: 0;
+	color: var(--text);
+	background: transparent;
+	text-align: left;
+	cursor: pointer;
+}
+
+.row-context-menu button:hover,
+.row-context-menu button:focus-visible {
+	background: var(--surface-soft);
+}
+
+.row-context-menu .danger-action {
+	color: #b3261e;
+}
+
 @media (max-width: 48rem) {
 	.topbar {
 		flex-wrap: wrap;
