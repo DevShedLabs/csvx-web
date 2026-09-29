@@ -13,7 +13,7 @@ The first slice is an accessible, developer-oriented workbench with local editin
 - Cell selection with A1 coordinates
 - Package and data-layer context
 - Responsive layout and keyboard-visible focus states
-- Cell editing with Enter, F2, double-click, and Escape to cancel
+- Cell editing with Enter, Space, F2, and Escape to cancel
 - Row context menu actions for insert-before, insert-after, and delete
 - LocalStorage persistence for edits during the demo session
 
