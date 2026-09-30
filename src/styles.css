@@ -392,6 +392,52 @@ h1 {
 	background: var(--border);
 }
 
+.color-swatch {
+	position: relative;
+	overflow: hidden;
+}
+
+.color-swatch input[type='color'] {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	border: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.color-swatch-text {
+	border-bottom: 0.1875rem solid;
+	padding-bottom: 0.0625rem;
+	font-weight: 700;
+}
+
+.color-swatch-fill,
+.color-swatch-border {
+	width: 0.875rem;
+	height: 0.875rem;
+	border-radius: 0.1875rem;
+}
+
+.color-swatch-fill {
+	border: 0.0625rem solid var(--border-strong);
+}
+
+.color-swatch-border {
+	border-width: 0.125rem;
+	border-style: solid;
+	background: transparent;
+}
+
+.format-clear {
+	width: auto;
+	padding: 0 var(--space-2);
+	font-size: 0.75rem;
+	color: var(--muted);
+}
+
 .grid-card {
 	display: flex;
 	flex-direction: column;
@@ -516,7 +562,16 @@ h1 {
 
 .cell-button.is-selected {
 	border-color: var(--accent);
-	box-shadow: inset 0 0 0 0.0625rem var(--accent);
+}
+
+.cell-button.is-in-selection {
+	background: var(--surface-soft);
+}
+
+.column-header-button.is-active,
+.row-header-button.is-active {
+	color: var(--accent-strong);
+	background: var(--surface-soft);
 }
 
 .status-bar {
