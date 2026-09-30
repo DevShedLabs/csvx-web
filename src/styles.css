@@ -251,6 +251,18 @@ h1 {
 	cursor: pointer;
 }
 
+.sheet-tab-input {
+	width: 8rem;
+	min-height: 2.25rem;
+	padding: 0 var(--space-3);
+	border: 0.0625rem solid var(--accent);
+	border-radius: var(--radius);
+	color: var(--text);
+	background: var(--surface);
+	font: inherit;
+	font-size: 0.8125rem;
+}
+
 .sheet-tab:hover {
 	color: var(--text);
 	background: var(--surface-raised);
