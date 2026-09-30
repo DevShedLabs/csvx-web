@@ -251,6 +251,26 @@ h1 {
 	background: var(--surface-raised);
 }
 
+.sheet-tab-add {
+	display: grid;
+	place-items: center;
+	width: 2.25rem;
+	min-height: 2.25rem;
+	border: 0.0625rem solid transparent;
+	border-radius: var(--radius);
+	color: var(--muted);
+	background: transparent;
+	font-size: 1.125rem;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.sheet-tab-add:hover {
+	color: var(--accent-strong);
+	background: var(--surface-raised);
+	border-color: var(--border);
+}
+
 .sheet-tab.is-active {
 	color: var(--accent-strong);
 	background: var(--surface-soft);
