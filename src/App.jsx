@@ -53,8 +53,16 @@ async function parseCSVX(file) {
 
 function formatCellValue(value, metadata, styles) {
   if (value === '') return ''; const format = metadata?.style ? styles?.[metadata.style]?.numberFormat : ''; if (!format || Number.isNaN(Number(value))) return value
-  const numericValue = Number(value); const decimalPart = format.split('.')[1] || ''; const decimals = (decimalPart.match(/0/g) || []).length; const outputValue = format.includes('%') ? numericValue * 100 : numericValue; const rounded = outputValue.toFixed(decimals); const [whole, fraction] = rounded.split('.'); const grouped = format.includes(',') ? whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : whole; const number = fraction ? `${grouped}.${fraction}` : grouped
+  const numericValue = Number(value); const decimalPart = format.split('.')[1] || ''; const formatDecimals = (decimalPart.match(/0/g) || []).length; const rawDecimals = value.includes('.') ? value.split('.')[1].length : 0; const decimals = format.includes('%') ? formatDecimals : Math.max(formatDecimals, rawDecimals); const outputValue = format.includes('%') ? numericValue * 100 : numericValue; const rounded = outputValue.toFixed(decimals); const [whole, fraction] = rounded.split('.'); const grouped = format.includes(',') ? whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : whole; const number = fraction ? `${grouped}.${fraction}` : grouped
   if (format.includes('%')) return `${number}%`; if (format.includes('$')) return `$${number}`; if (format.includes('€')) return `€${number}`; if (format.includes('£')) return `£${number}`; return number
+}
+function describeCellType(metadata, styles) {
+  const format = metadata?.style ? styles?.[metadata.style]?.numberFormat : ''
+  if (format) {
+    if (/[$€£¥]/.test(format)) return 'currency'
+    if (format.includes('%')) return 'percentage'
+  }
+  return metadata?.type || ''
 }
 function cellStyle(value, metadata, styles) { const style = metadata?.style ? styles?.[metadata.style] : null; const font = style?.font || {}; const fill = style?.fill || {}; const alignment = style?.alignment || {}; const numericType = ['integer', 'decimal'].includes(metadata?.type); const numericValue = value !== '' && !Number.isNaN(Number(value)); return { color: font.color || undefined, backgroundColor: fill.color || undefined, fontWeight: font.bold ? 700 : undefined, fontStyle: font.italic ? 'italic' : undefined, textAlign: alignment.horizontal || ((numericType || numericValue) ? 'right' : undefined), whiteSpace: alignment.wrapText ? 'normal' : 'nowrap' } }
 function columnLabel(index) { let label = ''; let value = index + 1; while (value > 0) { const remainder = (value - 1) % 26; label = String.fromCharCode(65 + remainder) + label; value = Math.floor((value - 1) / 26) } return label }
@@ -155,7 +163,7 @@ function setColumnWidth(workbook, sheetId, columnIndex, width) {
 
 function App() {
   const [workbook, setWorkbook] = useState(demoWorkbook); const [activeSheet, setActiveSheet] = useState('sheet-1'); const [selectedCell, setSelectedCell] = useState('A1'); const [editingCell, setEditingCell] = useState(null); const [draftValue, setDraftValue] = useState(''); const [contextMenu, setContextMenu] = useState(null); const [error, setError] = useState(''); const inputRef = useRef(null); const editorRef = useRef(null); const cellRefs = useRef(new Map()); const colRefs = useRef(new Map()); const contextMenuRef = useRef(null)
-  const sheet = useMemo(() => workbook.sheets.find((item) => item.id === activeSheet) || workbook.sheets[0], [activeSheet, workbook]); const selectedMetadata = sheet?.cells?.[selectedCell]; const position = cellPosition(selectedCell); const selectedValue = sheet?.rows?.[position.row]?.[position.column] || ''; const selectedDisplayValue = selectedMetadata?.formula || formatCellValue(selectedValue, selectedMetadata, workbook.styles) || 'Blank cell'; const selectedType = selectedMetadata?.type && selectedDisplayValue !== 'Blank cell' ? selectedMetadata.type : ''
+  const sheet = useMemo(() => workbook.sheets.find((item) => item.id === activeSheet) || workbook.sheets[0], [activeSheet, workbook]); const selectedMetadata = sheet?.cells?.[selectedCell]; const position = cellPosition(selectedCell); const selectedValue = sheet?.rows?.[position.row]?.[position.column] || ''; const selectedDisplayValue = selectedMetadata?.formula || formatCellValue(selectedValue, selectedMetadata, workbook.styles) || 'Blank cell'; const selectedType = selectedDisplayValue !== 'Blank cell' ? describeCellType(selectedMetadata, workbook.styles) : ''
   useEffect(() => { const stored = localStorage.getItem(STORED_PACKAGE_KEY); if (!stored) return; try { const restored = JSON.parse(stored); if (restored?.name && Array.isArray(restored.sheets)) { setWorkbook(restored); setActiveSheet(restored.sheets[0]?.id) } } catch { localStorage.removeItem(STORED_PACKAGE_KEY) } }, [])
   useEffect(() => { if (editingCell) { const input = editorRef.current; input?.focus(); input?.setSelectionRange(input.value.length, input.value.length) } }, [editingCell])
   useEffect(() => { if (!editingCell) cellRefs.current.get(selectedCell)?.focus() }, [selectedCell, editingCell, activeSheet])
