@@ -228,10 +228,16 @@ function nextStyleIdCounter(styles) {
   return numericSuffixes.length ? Math.max(...numericSuffixes) + 1 : 0
 }
 
-/** Applies a literal font/fill/border/alignment patch to every given cell, each getting its own
- * new style record. This does not dedupe identical styles across cells — a real editor would want
- * to, but that's a quality improvement, not a correctness one; tracked as a known simplification
- * rather than solved here.
+/** Applies a literal font/fill/border/alignment/numberFormat patch to every given cell, each
+ * getting its own new style record. This does not dedupe identical styles across cells — a real
+ * editor would want to, but that's a quality improvement, not a correctness one; tracked as a known
+ * simplification rather than solved here.
+ *
+ * `patch.numberFormat` has three states, since "leave it alone" and "remove it" are both real
+ * cases a caller needs (font/fill/border/alignment don't need this because their per-property merge
+ * already does the right thing without a sentinel): omit the key entirely to preserve whatever
+ * numberFormat the cell already had (what every existing caller — bold/italic/underline/alignment —
+ * does); pass a format string to set it; pass `null` to remove it.
  *
  * The id counter is computed once up front and incremented locally rather than rescanning `styles`
  * per cell (as a naive `nextStyleId(styles)` call per iteration would) — for a large selection
@@ -244,9 +250,10 @@ export function applyCellsFormat(workbook, sheetId, coordinates, patch) {
   coordinates.forEach((coordinate) => {
     const existingMeta = cells[coordinate] || {}
     const existingStyle = styleForId(styles, existingMeta.style)
+    const numberFormat = 'numberFormat' in patch ? patch.numberFormat : existingStyle.numberFormat
     const style = {
       id: `s${nextId}`,
-      ...(existingStyle.numberFormat ? { numberFormat: existingStyle.numberFormat } : {}),
+      ...(numberFormat ? { numberFormat } : {}),
       font: { ...existingStyle.font, ...patch.font },
       fill: { ...existingStyle.fill, ...patch.fill },
       border: { ...existingStyle.border, ...patch.border },

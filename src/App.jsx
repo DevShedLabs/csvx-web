@@ -28,6 +28,11 @@ import {
 const DEMO_URL = '/example.csvx'
 const DEFAULT_COLUMN_WIDTH = 128
 const MIN_COLUMN_WIDTH = 48
+// USD only for now — a currency picker (and the locale-aware formatting that implies) is real,
+// separate scope; see csvx-ts's format.ts comment on why general multi-currency/locale number
+// parsing isn't attempted yet. This is just the one Excel-style format code csvx-ts already
+// supports for display and round-trip-safe literal parsing (quoted-literal prefix, 2 decimals).
+const USD_NUMBER_FORMAT = '"$"#,##0.00'
 // File System Access API — Chromium only (not Firefox/Safari as of this writing). Where it's
 // available, Open keeps a live handle so Save can write back in place; everywhere else, Open uses
 // the classic <input type="file"> and Save always falls back to a download (Save As behavior).
@@ -178,6 +183,7 @@ function App() {
   )
   const allSelectedHaveFont = (property) => selectionStyles.length > 0 && selectionStyles.every((style) => style.font?.[property])
   const allSelectedHaveAlignment = (value) => selectionStyles.length > 0 && selectionStyles.every((style) => (style.alignment?.horizontal || '') === value)
+  const allSelectedAreCurrency = selectionStyles.length > 0 && selectionStyles.every((style) => style.numberFormat === USD_NUMBER_FORMAT)
 
   // Load the real example fixture on first mount, through the real engine, instead of shipping
   // fabricated demo data — see AGENTS.md: this app must never hold a second opinion about what a
@@ -451,6 +457,10 @@ function App() {
   }
   function setAlignment(value) {
     setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { alignment: { horizontal: allSelectedHaveAlignment(value) ? '' : value } }))
+    cellRefs.current.get(selectedCoordinate)?.focus()
+  }
+  function toggleCurrency() {
+    setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { numberFormat: allSelectedAreCurrency ? null : USD_NUMBER_FORMAT }))
     cellRefs.current.get(selectedCoordinate)?.focus()
   }
   function setTextColor(color) {
@@ -760,6 +770,7 @@ function App() {
               <span aria-hidden="true" className="color-swatch-border" style={{ borderColor: selectedStyle.border?.color || 'var(--border-strong)' }} />
               <input type="color" value={selectedStyle.border?.color || '#000000'} onChange={(e) => setBorderColor(e.target.value)} aria-label="Border color" />
             </label>
+            <button type="button" className={`format-button ${allSelectedAreCurrency ? 'is-active' : ''}`} aria-pressed={allSelectedAreCurrency} onMouseDown={(e) => e.preventDefault()} onClick={toggleCurrency} aria-label="Currency (USD)" title="Format as currency (USD)">$</button>
             <button type="button" className="format-button format-clear" onMouseDown={(e) => e.preventDefault()} onClick={clearFormatting} aria-label="Clear formatting" title="Clear formatting">Clear</button>
             <span className="format-divider" aria-hidden="true" />
             <button type="button" className={`format-button ${allSelectedHaveAlignment('left') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('left')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('left')} aria-label="Align left" title="Align left"><AlignIcon variant="left" /></button>
