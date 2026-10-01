@@ -80,10 +80,25 @@ export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
       const records = sheet.records.map((row, index) => (index === rowIndex ? [...row] : row))
       const coordinate = coordinateFor(columnIndex, rowIndex)
       const cells = { ...sheet.cells }
-      records[rowIndex][columnIndex] = value
       const nextMetadata = nextCellMetadata(cells[coordinate], isFormula ? value : undefined)
       if (nextMetadata) cells[coordinate] = nextMetadata
       else delete cells[coordinate]
+      if (isFormula) {
+        records[rowIndex][columnIndex] = value
+      } else {
+        // A literal typed against a cell whose style declares a numberFormat (e.g. "$7.00" into a
+        // currency-styled cell) is canonicalized to plain numeric text via resolveCellValue's
+        // numberFormat parsing — see spec/08-styles.md — rather than stored verbatim with the
+        // currency symbol baked into the CSV text forever. Anything that doesn't resolve to a
+        // number (a genuine string, a declared non-numeric column type, unparseable text) is stored
+        // exactly as typed; this never applies to a formula (handled above) or an already-cleared
+        // per-cell type override (nextCellMetadata just dropped it, so only the column's declared
+        // type, if any, can still apply here).
+        const declaredType = sheet.columns[columnIndex]?.type
+        const numberFormat = styleForId(workbook.styles, nextMetadata?.style).numberFormat
+        const resolved = resolveCellValue(value, declaredType, numberFormat)
+        records[rowIndex][columnIndex] = resolved.type === 'integer' || resolved.type === 'decimal' ? canonicalCellText(resolved) : value
+      }
       return { ...sheet, records, cells }
     }),
   }
@@ -103,9 +118,11 @@ function canonicalCellText(value) {
 /** Builds the flat coordinate->{formula|value} map csvx-ts's recalculateCells expects for one
  * sheet. Every CSV cell needs an entry (not just formula cells) so a formula can resolve a plain
  * cell it references; resolveCellValue (csvx-ts) is what decides a plain cell's type, per its own
- * declared type or its column's — this is the one place that decision is allowed to happen
- * (csvx-spec/AGENTS.md rule 1), never a heuristic guess made here. */
-function buildCellMap(sheet) {
+ * declared type, its column's, or (failing those) its style's numberFormat — this is the one place
+ * that decision is allowed to happen (csvx-spec/AGENTS.md rule 1), never a heuristic guess made
+ * here. `styles` is passed through only to resolve a cell's numberFormat by id — never interpreted
+ * here. */
+function buildCellMap(sheet, styles) {
   const cells = {}
   sheet.records.forEach((row, rowIndex) => {
     row.forEach((raw, columnIndex) => {
@@ -116,7 +133,8 @@ function buildCellMap(sheet) {
         return
       }
       const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
-      cells[coordinate] = { value: resolveCellValue(raw, declaredType) }
+      const numberFormat = styleForId(styles, metadata?.style).numberFormat
+      cells[coordinate] = { value: resolveCellValue(raw, declaredType, numberFormat) }
     })
   })
   return cells
@@ -132,7 +150,7 @@ function buildCellMap(sheet) {
 export function recalculateWorkbook(workbook) {
   const cellMapsByName = {}
   workbook.sheets.forEach((sheet) => {
-    cellMapsByName[sheet.name] = buildCellMap(sheet)
+    cellMapsByName[sheet.name] = buildCellMap(sheet, workbook.styles)
   })
   const sheets = workbook.sheets.map((sheet) => {
     const results = recalculateCells(cellMapsByName[sheet.name], {

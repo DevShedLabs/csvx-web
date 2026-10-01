@@ -170,7 +170,7 @@ function App() {
   // just whatever happens to be explicitly declared. Hidden for a genuinely blank cell — showing
   // "blank" on every empty cell would just be noise.
   const selectedDeclaredType = selectedMetadata?.type || sheet?.columns?.[selectedCell.column]?.type
-  const selectedResolvedValue = selectedMetadata?.cached ?? resolveCellValue(selectedRawValue, selectedDeclaredType)
+  const selectedResolvedValue = selectedMetadata?.cached ?? resolveCellValue(selectedRawValue, selectedDeclaredType, selectedStyle.numberFormat)
   const selectedType = selectedResolvedValue.type === 'blank' ? '' : selectedResolvedValue.type
   const selectionStyles = useMemo(
     () => [...selectedCells].map((coordinate) => styleFor(cellMetadata(sheet, coordinate)?.style)),
@@ -826,7 +826,7 @@ function App() {
                       // formatValue is presentation-only (spec/08-styles.md) — it never changes what's
                       // stored, only how a formula's cached result or a plain typed value is shown.
                       const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
-                      const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType)
+                      const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType, style.numberFormat)
                       const displayValue = formatValue(cellValue, style.numberFormat)
                       return (
                         <td key={coordinate}>
