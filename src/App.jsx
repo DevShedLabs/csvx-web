@@ -23,6 +23,16 @@ import {
 const DEMO_URL = '/example.csvx'
 const DEFAULT_COLUMN_WIDTH = 128
 const MIN_COLUMN_WIDTH = 48
+
+// Approximates XLSX "character width" units (what csvx-go's XLSX importer stores in Column.width,
+// e.g. 26.25 — see the unit caveat on model.js's Column.width comment) as CSS pixels, using the
+// standard Excel-compatible formula for the default Calibri 11 font. This is a display-only
+// approximation: nothing here writes a pixel value back into column.width, so the original,
+// ambiguous-unit value is never corrupted — only used when no user resize override exists yet.
+function pixelWidthForColumn(column) {
+  if (typeof column?.width !== 'number') return DEFAULT_COLUMN_WIDTH
+  return Math.max(MIN_COLUMN_WIDTH, Math.round(column.width * 7 + 5))
+}
 const ARROW_DIRECTIONS = { ArrowLeft: { column: -1, row: 0 }, ArrowRight: { column: 1, row: 0 }, ArrowUp: { column: 0, row: -1 }, ArrowDown: { column: 0, row: 1 } }
 // Must match `.spreadsheet th, .spreadsheet td { height: 1.75rem }` in index.css (1.75rem * 16px).
 // Real imported workbooks run to thousands of rows (example.csvx has ~1000); rendering every row
@@ -30,6 +40,34 @@ const ARROW_DIRECTIONS = { ArrowLeft: { column: -1, row: 0 }, ArrowRight: { colu
 // nodes. Only rows within ROW_OVERSCAN of the visible scroll window are actually mounted.
 const ROW_HEIGHT = 28
 const ROW_OVERSCAN = 10
+
+const ALIGN_ICON_BARS = {
+  left: [
+    [1, 3, 14],
+    [1, 7, 9],
+    [1, 11, 12],
+  ],
+  center: [
+    [1, 3, 14],
+    [3.5, 7, 9],
+    [2, 11, 12],
+  ],
+  right: [
+    [1, 3, 14],
+    [6, 7, 9],
+    [3, 11, 12],
+  ],
+}
+
+function AlignIcon({ variant }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      {ALIGN_ICON_BARS[variant].map(([x, y, width]) => (
+        <rect key={y} x={x} y={y} width={width} height="1.5" rx="0.75" fill="currentColor" />
+      ))}
+    </svg>
+  )
+}
 
 async function loadWorkbookFromBuffer(buffer) {
   try {
@@ -390,7 +428,7 @@ function App() {
     event.stopPropagation()
     const key = `${sheet.id}:${columnIndex}`
     const startX = event.clientX
-    const startWidth = columnWidthOverrides[key] || DEFAULT_COLUMN_WIDTH
+    const startWidth = columnWidthOverrides[key] || pixelWidthForColumn(sheet.columns[columnIndex])
     const colElement = colRefs.current.get(columnIndex)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -549,9 +587,9 @@ function App() {
             </label>
             <button type="button" className="format-button format-clear" onMouseDown={(e) => e.preventDefault()} onClick={clearFormatting} aria-label="Clear formatting" title="Clear formatting">Clear</button>
             <span className="format-divider" aria-hidden="true" />
-            <button type="button" className={`format-button ${allSelectedHaveAlignment('left') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('left')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('left')} aria-label="Align left" title="Align left">L</button>
-            <button type="button" className={`format-button ${allSelectedHaveAlignment('center') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('center')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('center')} aria-label="Align center" title="Align center">C</button>
-            <button type="button" className={`format-button ${allSelectedHaveAlignment('right') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('right')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('right')} aria-label="Align right" title="Align right">R</button>
+            <button type="button" className={`format-button ${allSelectedHaveAlignment('left') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('left')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('left')} aria-label="Align left" title="Align left"><AlignIcon variant="left" /></button>
+            <button type="button" className={`format-button ${allSelectedHaveAlignment('center') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('center')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('center')} aria-label="Align center" title="Align center"><AlignIcon variant="center" /></button>
+            <button type="button" className={`format-button ${allSelectedHaveAlignment('right') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('right')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('right')} aria-label="Align right" title="Align right"><AlignIcon variant="right" /></button>
           </div>
         </section>
         <section className="grid-card" aria-labelledby="grid-title">
@@ -562,7 +600,7 @@ function App() {
               <colgroup>
                 <col style={{ width: '3rem' }} />
                 {sheet.columns.map((column, index) => (
-                  <col key={column.id || index} ref={(el) => { if (el) colRefs.current.set(index, el); else colRefs.current.delete(index) }} style={{ width: `${columnWidthOverrides[`${sheet.id}:${index}`] || DEFAULT_COLUMN_WIDTH}px` }} />
+                  <col key={column.id || index} ref={(el) => { if (el) colRefs.current.set(index, el); else colRefs.current.delete(index) }} style={{ width: `${columnWidthOverrides[`${sheet.id}:${index}`] || pixelWidthForColumn(column)}px` }} />
                 ))}
               </colgroup>
               <thead>
@@ -575,7 +613,7 @@ function App() {
                         className={`column-header-button ${selectedColumns.has(index) ? 'is-active' : ''}`}
                         onClick={(e) => selectColumn(index, e.metaKey || e.ctrlKey)}
                         aria-label={`Select column ${column.name || column.id}`}
-                        title={column.width ? `Declared width: ${column.width} (unit not defined by the CSVX schema; not used for display)` : undefined}
+                        title={column.width ? `Declared width: ${column.width} (approximated to pixels for display)` : undefined}
                       >
                         {column.name || column.id}
                       </button>

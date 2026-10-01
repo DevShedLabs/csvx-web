@@ -8,5 +8,8 @@ export function downloadBytes(bytes, filename) {
   document.body.appendChild(link)
   link.click()
   link.remove()
-  URL.revokeObjectURL(url)
+  // Revoking immediately after click() races the browser actually reading the blob for the
+  // download — some browsers (notably ones that hand the URL to a separate download process)
+  // can end up saving a truncated or empty file. Deferring the revoke lets the read complete first.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

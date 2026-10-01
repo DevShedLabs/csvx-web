@@ -11,9 +11,10 @@
 // never defines a unit for it, and real imported data (example.csvx, via csvx-go's XLSX importer)
 // stores it in XLSX character-width units (e.g. 26.25), not CSS pixels — confirmed by actually
 // running this app against that fixture, which is exactly the kind of gap "building it and using
-// it for real" surfaces that spec-reading doesn't. Column resize in App.jsx is therefore
-// view-only state, local to the browser session, and never touches this field — writing a pixel
-// number into it would silently corrupt the original unit on export.
+// it for real" surfaces that spec-reading doesn't. App.jsx's pixelWidthForColumn() reads this
+// field and approximates it to pixels purely for initial display; a user's manual resize is still
+// view-only state, local to the browser session, and never writes back into this field — writing
+// a pixel number into it would silently corrupt the original unit on export.
 
 import { columnId } from 'csvx-ts/browser'
 
