@@ -18,7 +18,7 @@
 // view-only state, local to the browser session, and never writes back into this field — writing
 // a pixel number into it would silently corrupt the original unit on export.
 
-import { columnId } from 'csvx-ts/browser'
+import { columnId, columnIndexFromId, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
 
 export function coordinateFor(columnIndex, rowIndex) {
   return `${columnId(columnIndex)}${rowIndex + 1}`
@@ -28,15 +28,7 @@ export function coordinateFor(columnIndex, rowIndex) {
 export function indicesForCoordinate(coordinate) {
   const match = /^([A-Z]+)(\d+)$/.exec(coordinate)
   if (!match) return { column: 0, row: 0 }
-  let column = 0
-  for (const char of match[1]) column = column * 26 + (char.charCodeAt(0) - 64)
-  return { column: column - 1, row: Number(match[2]) - 1 }
-}
-
-function columnIndexFromLabel(label) {
-  let column = 0
-  for (const char of label) column = column * 26 + (char.charCodeAt(0) - 64)
-  return column - 1
+  return { column: columnIndexFromId(match[1]), row: Number(match[2]) - 1 }
 }
 
 export function cellMetadata(sheet, coordinate) {
@@ -70,28 +62,100 @@ export function findSheet(workbook, sheetId) {
   return workbook.sheets.find((sheet) => sheet.id === sheetId) || workbook.sheets[0]
 }
 
-/** Sets a cell's raw CSV value. Clears any existing `formula`/`cached` metadata on that cell,
- * since a literal value the user just typed and a stale formula result can't both be true at
- * once — this is invariant maintenance, not inventing what the new value means. Style and
- * validation metadata, which describe the cell rather than its content, are preserved. */
+/** Sets a cell's raw CSV value. A value starting with "=" is stored as a formula (and the sheet is
+ * recalculated via csvx-ts — see recalculateWorkbook — so `cached` and the visible CSV text update
+ * immediately); anything else clears any existing `formula`/`cached` metadata on that cell, since a
+ * literal value the user just typed and a stale formula result can't both be true at once. Style
+ * and validation metadata, which describe the cell rather than its content, are preserved either
+ * way. */
 export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
-  return {
+  const isFormula = typeof value === 'string' && value.startsWith('=')
+  const next = {
     ...workbook,
     sheets: workbook.sheets.map((sheet) => {
       if (sheet.id !== sheetId) return sheet
       const records = sheet.records.map((row, index) => (index === rowIndex ? [...row] : row))
-      records[rowIndex][columnIndex] = value
       const coordinate = coordinateFor(columnIndex, rowIndex)
       const cells = { ...sheet.cells }
-      const existing = cells[coordinate]
-      if (existing) {
-        const { formula, cached, ...rest } = existing
-        if (Object.keys(rest).length > 0) cells[coordinate] = rest
-        else delete cells[coordinate]
+      if (isFormula) {
+        records[rowIndex][columnIndex] = value
+        const { cached, ...rest } = cells[coordinate] || {}
+        cells[coordinate] = { ...rest, formula: value }
+      } else {
+        records[rowIndex][columnIndex] = value
+        const existing = cells[coordinate]
+        if (existing) {
+          const { formula, cached, ...rest } = existing
+          if (Object.keys(rest).length > 0) cells[coordinate] = rest
+          else delete cells[coordinate]
+        }
       }
       return { ...sheet, records, cells }
     }),
   }
+  return recalculateWorkbook(next)
+}
+
+/** Converts a formula result back to the raw text the sheet CSV stores — spec/03-sheets.md: the
+ * CSV holds the cache, not a formatted-for-display string (that's formatValue's job, applied only
+ * at render time). */
+function canonicalCellText(value) {
+  if (!value || value.type === 'blank') return ''
+  if (value.type === 'error') return `#${value.code}`
+  if (value.type === 'boolean') return value.value ? 'TRUE' : 'FALSE'
+  return String(value.value ?? '')
+}
+
+/** Builds the flat coordinate->{formula|value} map csvx-ts's recalculateCells expects for one
+ * sheet. Every CSV cell needs an entry (not just formula cells) so a formula can resolve a plain
+ * cell it references; resolveCellValue (csvx-ts) is what decides a plain cell's type, per its own
+ * declared type or its column's — this is the one place that decision is allowed to happen
+ * (csvx-spec/AGENTS.md rule 1), never a heuristic guess made here. */
+function buildCellMap(sheet) {
+  const cells = {}
+  sheet.records.forEach((row, rowIndex) => {
+    row.forEach((raw, columnIndex) => {
+      const coordinate = coordinateFor(columnIndex, rowIndex)
+      const metadata = sheet.cells?.[coordinate]
+      if (metadata?.formula) {
+        cells[coordinate] = { formula: metadata.formula }
+        return
+      }
+      const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
+      cells[coordinate] = { value: resolveCellValue(raw, declaredType) }
+    })
+  })
+  return cells
+}
+
+/** Recalculates every formula cell in every sheet via csvx-ts's recalculateCells — orchestration
+ * only (gathering inputs, writing results back), never the evaluation itself. Cross-sheet
+ * references are resolved against each other sheet's own (already-typed) cell map by name; a
+ * formula's own sheet never needs its own result fed back through resolveSheet, since recalculateCells
+ * already resolves same-sheet references directly. Call this after anything that can change what a
+ * formula sees: a cell edit, a row/column insert or delete, or once on workbook load (covers a
+ * formula authored by another tool with a stale or missing cache). */
+export function recalculateWorkbook(workbook) {
+  const cellMapsByName = {}
+  workbook.sheets.forEach((sheet) => {
+    cellMapsByName[sheet.name] = buildCellMap(sheet)
+  })
+  const sheets = workbook.sheets.map((sheet) => {
+    const results = recalculateCells(cellMapsByName[sheet.name], {
+      resolveSheet: (name) => cellMapsByName[name],
+    })
+    if (Object.keys(results).length === 0) return sheet
+    const records = sheet.records.map((row) => [...row])
+    const cells = { ...sheet.cells }
+    for (const [coordinate, value] of Object.entries(results)) {
+      const { row, column } = indicesForCoordinate(coordinate)
+      if (!records[row]) continue
+      records[row][column] = canonicalCellText(value)
+      cells[coordinate] = { ...cells[coordinate], cached: value }
+    }
+    return { ...sheet, records, cells }
+  })
+  return { ...workbook, sheets }
 }
 
 /** Appends a blank row at the end of a sheet. Safe without formula-reference rewriting because
@@ -244,7 +308,7 @@ function rewriteFormulaColumns(formula, targetSheetName, insertionColumn, delta,
   if (!formula) return formula
   return formula.replace(CELL_REFERENCE_PATTERN, (match, sheetPrefix, colAnchor, column, rowAnchor, rowText) => {
     if (referencedSheetName(sheetPrefix, targetSheetName) !== targetSheetName) return match
-    const columnIndex = columnIndexFromLabel(column)
+    const columnIndex = columnIndexFromId(column)
     if (deleting && columnIndex === insertionColumn) return '#REF!'
     if (columnIndex < insertionColumn) return match
     return `${sheetPrefix || ''}${colAnchor}${columnId(columnIndex + delta)}${rowAnchor}${rowText}`
@@ -335,18 +399,21 @@ function shiftSheetColumns(workbook, sheetId, insertionColumn, delta, deleting) 
   }
 }
 
+// Reference text is already rewritten by shiftSheetRows/shiftSheetColumns above; recalculateWorkbook
+// (re-run here) is what turns those rewritten formulas into updated cached values and visible text.
+
 export function insertRow(workbook, sheetId, rowIndex) {
-  return shiftSheetRows(workbook, sheetId, rowIndex, 1, false)
+  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, rowIndex, 1, false))
 }
 
 export function deleteRow(workbook, sheetId, rowIndex) {
-  return shiftSheetRows(workbook, sheetId, rowIndex, -1, true)
+  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, rowIndex, -1, true))
 }
 
 export function insertColumn(workbook, sheetId, columnIndex) {
-  return shiftSheetColumns(workbook, sheetId, columnIndex, 1, false)
+  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, columnIndex, 1, false))
 }
 
 export function deleteColumn(workbook, sheetId, columnIndex) {
-  return shiftSheetColumns(workbook, sheetId, columnIndex, -1, true)
+  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, columnIndex, -1, true))
 }

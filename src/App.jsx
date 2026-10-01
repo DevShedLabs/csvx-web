@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { loadWorkbookFromZip, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
+import { formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
 // loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
 // validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
 // loadWorkbookFromZip internally and classifies the thrown error, so calling both re-parses the
@@ -20,6 +20,7 @@ import {
   indicesForCoordinate,
   insertColumn,
   insertRow,
+  recalculateWorkbook,
   renameSheet,
   setCellValue,
 } from './model.js'
@@ -75,7 +76,10 @@ function AlignIcon({ variant }) {
 
 async function loadWorkbookFromBuffer(buffer) {
   try {
-    return await loadWorkbookFromZip(buffer)
+    const loaded = await loadWorkbookFromZip(buffer)
+    // A formula's cached value is advisory (spec/05-cell-values.md) and may be stale or missing
+    // (e.g. authored by a tool that can't calculate) — recalculate once on load rather than trust it.
+    return recalculateWorkbook(loaded)
   } catch (loadError) {
     throw new Error(loadError.message || 'Package failed to load')
   }
@@ -326,7 +330,11 @@ function App() {
   function beginEdit(row, column, initialValue) {
     const coordinate = coordinateFor(column, row)
     setSelectedCell({ row, column })
-    setDraftValue(initialValue !== undefined ? initialValue : sheet.records[row]?.[column] ?? '')
+    // Editing an existing formula cell edits the formula text, never its cached result — the CSV
+    // cell itself holds the cache (spec/03-sheets.md), so sheet.records alone isn't the right
+    // source once a formula is involved.
+    const existingFormula = cellMetadata(sheet, coordinate)?.formula
+    setDraftValue(initialValue !== undefined ? initialValue : existingFormula ?? sheet.records[row]?.[column] ?? '')
     setEditingCell(coordinate)
     setContextMenu(null)
   }
@@ -677,7 +685,11 @@ function App() {
                       const metadata = cellMetadata(sheet, coordinate)
                       const style = styleFor(metadata?.style)
                       const isEditing = editingCell === coordinate
-                      const displayValue = metadata?.cached?.value ?? value
+                      // formatValue is presentation-only (spec/08-styles.md) — it never changes what's
+                      // stored, only how a formula's cached result or a plain typed value is shown.
+                      const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
+                      const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType)
+                      const displayValue = formatValue(cellValue, style.numberFormat)
                       return (
                         <td key={coordinate}>
                           {isEditing ? (
