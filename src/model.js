@@ -11,16 +11,14 @@
 // so it doesn't cross the line rule 5.1 draws; nothing here parses a formula's actual semantics or
 // computes a result.
 //
-// Also notably absent: anything that writes to Column.width. schemas/sheet-metadata.schema.json
-// never defines a unit for it, and real imported data (example.csvx, via csvx-go's XLSX importer)
-// stores it in XLSX character-width units (e.g. 26.25), not CSS pixels — confirmed by actually
-// running this app against that fixture, which is exactly the kind of gap "building it and using
-// it for real" surfaces that spec-reading doesn't. App.jsx's pixelWidthForColumn() reads this
-// field and approximates it to pixels purely for initial display; a user's manual resize is still
-// view-only state, local to the browser session, and never writes back into this field — writing
-// a pixel number into it would silently corrupt the original unit on export.
+// Column.width is in XLSX character-width units (e.g. 26.25), per spec/03-sheets.md — this was
+// discovered by actually running this app against example.csvx's real imported data, exactly the
+// kind of gap "building it and using it for real" surfaces that spec-reading doesn't, and the spec
+// has since been updated to make the unit explicit rather than leaving every engine to guess. A
+// resize converts through csvx-ts's pixelsToColumnWidth (see setColumnWidth below) rather than
+// writing a raw pixel number into this field, which would corrupt it for any other reader.
 
-import { columnId, columnIndexFromId, nextCellMetadata, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
+import { columnId, columnIndexFromId, nextCellMetadata, pixelsToColumnWidth, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
 
 export function coordinateFor(columnIndex, rowIndex) {
   return `${columnId(columnIndex)}${rowIndex + 1}`
@@ -198,6 +196,23 @@ export function appendColumn(workbook, sheetId) {
       const columns = [...sheet.columns, { id, name: id }]
       const records = sheet.records.map((row) => [...row, ''])
       return { ...sheet, columns, records }
+    }),
+  }
+}
+
+/** Persists a user's drag-resize back into Column.width, converting the live pixel width to the
+ * field's real unit (XLSX character-width units, per spec/03-sheets.md) via csvx-ts's
+ * pixelsToColumnWidth — never writing a raw pixel number into this field, which would corrupt it
+ * for any other tool reading the file (including a round-trip through this same app after a real
+ * XLSX import, where the field already holds that unit). */
+export function setColumnWidth(workbook, sheetId, columnIndex, pixelWidth) {
+  const width = pixelsToColumnWidth(pixelWidth)
+  return {
+    ...workbook,
+    sheets: workbook.sheets.map((sheet) => {
+      if (sheet.id !== sheetId) return sheet
+      const columns = sheet.columns.map((column, index) => (index === columnIndex ? { ...column, width } : column))
+      return { ...sheet, columns }
     }),
   }
 }

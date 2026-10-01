@@ -550,7 +550,12 @@ h1 {
 .column-resize-handle {
 	position: absolute;
 	top: 0;
-	right: -0.1875rem;
+	/* Flush with the inner right edge, not straddling it — the header cell has overflow: hidden
+	   (for text-overflow ellipsis), which clips anything positioned outside its own box, so the
+	   previous `right: -0.1875rem` (intentionally centered on the border) silently clipped away
+	   roughly half this handle's hit area. Confirmed with elementFromPoint: a click at the handle's
+	   own measured center landed on the <th> underneath it, not the handle. */
+	right: 0;
 	width: 0.375rem;
 	height: 100%;
 	cursor: col-resize;

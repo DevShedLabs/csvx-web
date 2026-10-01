@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
+import { columnWidthToPixels, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
 // loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
 // validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
 // loadWorkbookFromZip internally and classifies the thrown error, so calling both re-parses the
@@ -23,6 +23,7 @@ import {
   recalculateWorkbook,
   renameSheet,
   setCellValue,
+  setColumnWidth,
 } from './model.js'
 
 const DEMO_URL = '/example.csvx'
@@ -39,14 +40,13 @@ const USD_NUMBER_FORMAT = '"$"#,##0.00'
 const SUPPORTS_FILE_SYSTEM_ACCESS = typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function'
 const CSVX_PICKER_TYPES = [{ description: 'CSVX workbook', accept: { 'application/zip': ['.csvx'] } }]
 
-// Approximates XLSX "character width" units (what csvx-go's XLSX importer stores in Column.width,
-// e.g. 26.25 — see the unit caveat on model.js's Column.width comment) as CSS pixels, using the
-// standard Excel-compatible formula for the default Calibri 11 font. This is a display-only
-// approximation: nothing here writes a pixel value back into column.width, so the original,
-// ambiguous-unit value is never corrupted — only used when no user resize override exists yet.
+// Column.width is in XLSX character-width units, per spec/03-sheets.md — columnWidthToPixels
+// (csvx-ts) is the one canonical conversion every engine agrees on; a resize writes back through
+// its inverse, pixelsToColumnWidth (see setColumnWidth in model.js), so this now round-trips
+// instead of being display-only.
 function pixelWidthForColumn(column) {
   if (typeof column?.width !== 'number') return DEFAULT_COLUMN_WIDTH
-  return Math.max(MIN_COLUMN_WIDTH, Math.round(column.width * 7 + 5))
+  return Math.max(MIN_COLUMN_WIDTH, columnWidthToPixels(column.width))
 }
 const ARROW_DIRECTIONS = { ArrowLeft: { column: -1, row: 0 }, ArrowRight: { column: 1, row: 0 }, ArrowUp: { column: 0, row: -1 }, ArrowDown: { column: 0, row: 1 } }
 // Must match `.spreadsheet th, .spreadsheet td { height: 1.75rem }` in index.css (1.75rem * 16px).
@@ -121,10 +121,6 @@ function App() {
   const [error, setError] = useState('')
   const [renamingSheetId, setRenamingSheetId] = useState(null)
   const [sheetNameDraft, setSheetNameDraft] = useState('')
-  // View-only, never written back into the workbook — see the comment on Column.width in
-  // model.js for why: the schema's declared width is in an undefined (and, for real imported
-  // data, non-pixel) unit, so resizing here must not overwrite it.
-  const [columnWidthOverrides, setColumnWidthOverrides] = useState({})
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
   // Guards the demo-fixture fetch below against clobbering a workbook the user opened themselves
@@ -483,9 +479,8 @@ function App() {
   function startColumnResize(event, columnIndex) {
     event.preventDefault()
     event.stopPropagation()
-    const key = `${sheet.id}:${columnIndex}`
     const startX = event.clientX
-    const startWidth = columnWidthOverrides[key] || pixelWidthForColumn(sheet.columns[columnIndex])
+    const startWidth = pixelWidthForColumn(sheet.columns[columnIndex])
     const colElement = colRefs.current.get(columnIndex)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -493,6 +488,8 @@ function App() {
       return Math.max(MIN_COLUMN_WIDTH, startWidth + (moveEvent.clientX - startX))
     }
     function handleMove(moveEvent) {
+      // Direct DOM mutation during the drag, not React state — committing to the real model (and
+      // triggering a full grid re-render) on every mousemove would make resizing feel sluggish.
       if (colElement) colElement.style.width = `${widthAt(moveEvent)}px`
     }
     function handleUp(moveEvent) {
@@ -500,7 +497,7 @@ function App() {
       document.removeEventListener('mouseup', handleUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
-      setColumnWidthOverrides((current) => ({ ...current, [key]: widthAt(moveEvent) }))
+      setWorkbook((current) => setColumnWidth(current, sheet.id, columnIndex, widthAt(moveEvent)))
     }
     document.addEventListener('mousemove', handleMove)
     document.addEventListener('mouseup', handleUp)
@@ -786,7 +783,7 @@ function App() {
               <colgroup>
                 <col style={{ width: '3rem' }} />
                 {sheet.columns.map((column, index) => (
-                  <col key={column.id || index} ref={(el) => { if (el) colRefs.current.set(index, el); else colRefs.current.delete(index) }} style={{ width: `${columnWidthOverrides[`${sheet.id}:${index}`] || pixelWidthForColumn(column)}px` }} />
+                  <col key={column.id || index} ref={(el) => { if (el) colRefs.current.set(index, el); else colRefs.current.delete(index) }} style={{ width: `${pixelWidthForColumn(column)}px` }} />
                 ))}
               </colgroup>
               <thead>
@@ -799,7 +796,7 @@ function App() {
                         className={`column-header-button ${selectedColumns.has(index) ? 'is-active' : ''}`}
                         onClick={(e) => selectColumn(index, e.metaKey || e.ctrlKey)}
                         aria-label={`Select column ${column.name || column.id}`}
-                        title={column.width ? `Declared width: ${column.width} (approximated to pixels for display)` : undefined}
+                        title={column.width ? `Width: ${column.width} (XLSX character-width units)` : undefined}
                       >
                         {column.name || column.id}
                       </button>
