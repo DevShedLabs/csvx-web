@@ -28,6 +28,11 @@ import {
 const DEMO_URL = '/example.csvx'
 const DEFAULT_COLUMN_WIDTH = 128
 const MIN_COLUMN_WIDTH = 48
+// File System Access API — Chromium only (not Firefox/Safari as of this writing). Where it's
+// available, Open keeps a live handle so Save can write back in place; everywhere else, Open uses
+// the classic <input type="file"> and Save always falls back to a download (Save As behavior).
+const SUPPORTS_FILE_SYSTEM_ACCESS = typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function'
+const CSVX_PICKER_TYPES = [{ description: 'CSVX workbook', accept: { 'application/zip': ['.csvx'] } }]
 
 // Approximates XLSX "character width" units (what csvx-go's XLSX importer stores in Column.width,
 // e.g. 26.25 — see the unit caveat on model.js's Column.width comment) as CSS pixels, using the
@@ -121,6 +126,11 @@ function App() {
   // while that fetch was still in flight — without this, a slow demo-fetch response arriving after
   // a manual Open would silently overwrite the user's file with the fixture.
   const userOpenedRef = useRef(false)
+  // The live handle for the file the user opened via the File System Access API, if the browser
+  // supports it and they didn't open via the plain <input type="file"> fallback or the demo fetch
+  // — this is what lets Save write back to the same file in place instead of always downloading a
+  // new copy. Not state: it never needs to trigger a re-render on its own.
+  const fileHandleRef = useRef(null)
   const inputRef = useRef(null)
   const editorRef = useRef(null)
   const formulaBarRef = useRef(null)
@@ -264,6 +274,10 @@ function App() {
       } else if (key === 'u') {
         event.preventDefault()
         toggleFont('underline')
+      } else if (key === 's') {
+        // Saves in place instead of letting the browser try to "Save page as…".
+        event.preventDefault()
+        handleSave()
       }
     }
     document.addEventListener('keydown', handleShortcut)
@@ -561,39 +575,98 @@ function App() {
     setContextMenu(null)
   }
 
-  async function handleOpen(event) {
+  async function openFile(file) {
+    userOpenedRef.current = true
+    const buffer = await file.arrayBuffer()
+    const loaded = await loadWorkbookFromBuffer(buffer)
+    setWorkbook(loaded)
+    setFileName(file.name)
+    setActiveSheetId(loaded.sheets[0]?.id)
+    selectCell(0, 0)
+    setError('')
+  }
+  // Classic fallback path: browsers without the File System Access API (Firefox, Safari) or a user
+  // who dismisses the native picker's capability in favor of a plain file input. No handle means
+  // Save can't write back in place for this file — it'll fall back to Save As.
+  async function handleOpenInputChange(event) {
     const file = event.target.files?.[0]
     if (!file) return
-    userOpenedRef.current = true
+    fileHandleRef.current = null
     try {
-      const buffer = await file.arrayBuffer()
-      const loaded = await loadWorkbookFromBuffer(buffer)
-      setWorkbook(loaded)
-      setFileName(file.name)
-      setActiveSheetId(loaded.sheets[0]?.id)
-      selectCell(0, 0)
-      setError('')
+      await openFile(file)
     } catch (loadError) {
       setError(loadError.message)
     }
     event.target.value = ''
   }
-  async function handleExport() {
-    if (!workbook) return
+  async function handleOpenClick() {
+    if (!SUPPORTS_FILE_SYSTEM_ACCESS) {
+      inputRef.current?.click()
+      return
+    }
     try {
-      const bytes = await writeWorkbookToZip(workbook)
-      const diagnostics = await validateBuffer(bytes)
-      if (!diagnostics.valid) {
-        setError(`Export produced an invalid package: ${diagnostics.errors[0]?.message}`)
-        return
-      }
-      downloadBytes(bytes, fileName || 'workbook.csvx')
-      setError('')
-    } catch (exportError) {
-      setError(exportError.message)
+      const [handle] = await window.showOpenFilePicker({ types: CSVX_PICKER_TYPES })
+      const file = await handle.getFile()
+      fileHandleRef.current = handle
+      await openFile(file)
+    } catch (pickerError) {
+      if (pickerError.name === 'AbortError') return
+      setError(pickerError.message)
     }
   }
-
+  async function buildExportBytes() {
+    const bytes = await writeWorkbookToZip(workbook)
+    const diagnostics = await validateBuffer(bytes)
+    if (!diagnostics.valid) throw new Error(`Save produced an invalid package: ${diagnostics.errors[0]?.message}`)
+    return bytes
+  }
+  // Writes back to the file the user opened, in place — the behavior any real editor's Cmd/Ctrl+S
+  // gives you. Falls back to Save As when there's no live handle to write through (opened via the
+  // classic input, opened the read-only demo fixture, or the browser doesn't support the API).
+  async function handleSave() {
+    if (!workbook) return
+    try {
+      const bytes = await buildExportBytes()
+      if (fileHandleRef.current) {
+        const writable = await fileHandleRef.current.createWritable()
+        await writable.write(bytes)
+        await writable.close()
+        setError('')
+        return
+      }
+      await saveAsWithBytes(bytes)
+    } catch (saveError) {
+      setError(saveError.message)
+    }
+  }
+  async function saveAsWithBytes(bytes) {
+    if (SUPPORTS_FILE_SYSTEM_ACCESS) {
+      try {
+        const handle = await window.showSaveFilePicker({ suggestedName: fileName || 'workbook.csvx', types: CSVX_PICKER_TYPES })
+        const writable = await handle.createWritable()
+        await writable.write(bytes)
+        await writable.close()
+        fileHandleRef.current = handle
+        setFileName(handle.name)
+        setError('')
+        return
+      } catch (pickerError) {
+        if (pickerError.name === 'AbortError') return
+        setError(pickerError.message)
+        return
+      }
+    }
+    downloadBytes(bytes, fileName || 'workbook.csvx')
+    setError('')
+  }
+  async function handleSaveAs() {
+    if (!workbook) return
+    try {
+      await saveAsWithBytes(await buildExportBytes())
+    } catch (saveError) {
+      setError(saveError.message)
+    }
+  }
   if (!workbook || !sheet) {
     return (
       <div className="app-shell">
@@ -622,9 +695,10 @@ function App() {
           <span className="muted">Core {workbook.version}</span>
         </div>
         <nav className="top-actions" aria-label="File actions">
-          <input ref={inputRef} type="file" accept=".csvx,application/zip" onChange={handleOpen} className="sr-only" aria-label="Open CSVX package" />
-          <button type="button" className="button button-quiet" onClick={() => inputRef.current?.click()}>Open</button>
-          <button type="button" className="button button-primary" onClick={handleExport}>Export</button>
+          <input ref={inputRef} type="file" accept=".csvx,application/zip" onChange={handleOpenInputChange} className="sr-only" aria-label="Open CSVX package" />
+          <button type="button" className="button button-quiet" onClick={handleOpenClick}>Open</button>
+          <button type="button" className="button button-quiet" onClick={handleSaveAs} title="Save a copy to a new file">Save As…</button>
+          <button type="button" className="button button-primary" onClick={handleSave} title="Save (Cmd/Ctrl+S)">Save</button>
         </nav>
       </header>
       <main id="main-content" className="main-content" tabIndex="-1">
