@@ -374,6 +374,20 @@ h1 {
 	text-overflow: ellipsis;
 }
 
+.formula-input {
+	flex: 1;
+	min-width: 0;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	padding: 0;
+}
+
+.formula-input:focus {
+	outline: none;
+}
+
 .value-type {
 	padding-left: var(--space-3);
 	color: var(--muted);

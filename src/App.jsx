@@ -94,11 +94,19 @@ function App() {
   const [selectedColumns, setSelectedColumns] = useState(() => new Set())
   const [selectedRows, setSelectedRows] = useState(() => new Set())
   const [editingCell, setEditingCell] = useState(null)
+  // Which input is the live editor for editingCell — the grid's inline cell input, or the formula
+  // bar. Only one can actually be focused at a time; this is what stops the grid cell's autoFocus
+  // from stealing focus back from the formula bar while the user is typing into it there.
+  const [editingSource, setEditingSource] = useState('grid')
   // Only the *initial* value of the in-progress edit — the <input> below is uncontrolled
   // (defaultValue, not value) so keystrokes don't setState on every character and re-render the
-  // whole grid. Commit reads the live value from editorRef instead; draftValue is just the
-  // fallback for the instant before that ref attaches.
+  // whole grid. Commit reads the live value from editorRef/formulaBarRef instead; draftValue is
+  // just the fallback for the instant before that ref attaches.
   const [draftValue, setDraftValue] = useState('')
+  // Bumped on cancel (and after a commit) to force the always-mounted formula bar input to remount
+  // and re-read its defaultValue — unlike the grid's cell input, it doesn't unmount on its own when
+  // editing ends, so a cancelled or committed edit would otherwise leave stale typed text showing.
+  const [editRevision, setEditRevision] = useState(0)
   const [contextMenu, setContextMenu] = useState(null)
   const [error, setError] = useState('')
   const [renamingSheetId, setRenamingSheetId] = useState(null)
@@ -115,6 +123,12 @@ function App() {
   const userOpenedRef = useRef(false)
   const inputRef = useRef(null)
   const editorRef = useRef(null)
+  const formulaBarRef = useRef(null)
+  // The formula bar never unmounts the way the grid's inline editor does, so Enter/Escape calling
+  // .blur() to leave it synchronously re-fires onBlur's commitEdit with the *previous* render's
+  // editingCell (state updates from the keydown handler haven't flushed yet) — this suppresses that
+  // redundant/incorrect re-commit for exactly one blur.
+  const suppressFormulaBarBlurRef = useRef(false)
   const cellRefs = useRef(new Map())
   const colRefs = useRef(new Map())
   const contextMenuRef = useRef(null)
@@ -327,7 +341,7 @@ function App() {
     selectCell(0, 0)
   }
 
-  function beginEdit(row, column, initialValue) {
+  function beginEdit(row, column, initialValue, source = 'grid') {
     const coordinate = coordinateFor(column, row)
     setSelectedCell({ row, column })
     // Editing an existing formula cell edits the formula text, never its cached result — the CSV
@@ -336,16 +350,23 @@ function App() {
     const existingFormula = cellMetadata(sheet, coordinate)?.formula
     setDraftValue(initialValue !== undefined ? initialValue : existingFormula ?? sheet.records[row]?.[column] ?? '')
     setEditingCell(coordinate)
+    setEditingSource(source)
     setContextMenu(null)
+  }
+  function currentEditorValue() {
+    const ref = editingSource === 'formula-bar' ? formulaBarRef : editorRef
+    return ref.current?.value ?? draftValue
   }
   function commitEdit() {
     if (!editingCell) return
-    const value = editorRef.current?.value ?? draftValue
+    const value = currentEditorValue()
     setWorkbook(setCellValue(workbook, sheet.id, selectedCell.row, selectedCell.column, value))
     setEditingCell(null)
+    setEditRevision((revision) => revision + 1)
   }
   function cancelEdit() {
     setEditingCell(null)
+    setEditRevision((revision) => revision + 1)
   }
   function moveSelection(direction) {
     const nextColumn = Math.max(0, Math.min(sheet.columns.length - 1, selectedCell.column + direction.column))
@@ -354,9 +375,10 @@ function App() {
   }
   function commitEditAndMove(direction) {
     if (!editingCell) return
-    const value = editorRef.current?.value ?? draftValue
+    const value = currentEditorValue()
     setWorkbook(setCellValue(workbook, sheet.id, selectedCell.row, selectedCell.column, value))
     setEditingCell(null)
+    setEditRevision((revision) => revision + 1)
     moveSelection(direction)
   }
   function handleCellKeyDown(event, row, column) {
@@ -604,7 +626,40 @@ function App() {
           <div className="name-box">{selectedCoordinate}</div>
           <div className="formula-symbol" aria-hidden="true">fx</div>
           <div className="formula-value">
-            {selectedMetadata?.formula || selectedMetadata?.cached?.value || selectedRawValue || 'Blank cell'}
+            <input
+              key={`${activeSheetId}:${selectedCoordinate}:${editRevision}`}
+              ref={formulaBarRef}
+              type="text"
+              className="formula-input"
+              defaultValue={selectedMetadata?.formula ?? selectedRawValue}
+              placeholder="Blank cell"
+              onFocus={() => {
+                if (!(editingCell === selectedCoordinate && editingSource === 'formula-bar')) {
+                  beginEdit(selectedCell.row, selectedCell.column, undefined, 'formula-bar')
+                }
+              }}
+              onBlur={() => {
+                if (suppressFormulaBarBlurRef.current) {
+                  suppressFormulaBarBlurRef.current = false
+                  return
+                }
+                commitEdit()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  suppressFormulaBarBlurRef.current = true
+                  commitEdit()
+                  e.currentTarget.blur()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  suppressFormulaBarBlurRef.current = true
+                  cancelEdit()
+                  e.currentTarget.blur()
+                }
+              }}
+              aria-label={`Formula for ${selectedCoordinate}`}
+            />
             {selectedType ? <span className="value-type">{selectedType}</span> : null}
           </div>
           <div className="format-toolbar" role="toolbar" aria-label="Cell formatting">
@@ -684,7 +739,9 @@ function App() {
                       const value = row[columnIndex] || ''
                       const metadata = cellMetadata(sheet, coordinate)
                       const style = styleFor(metadata?.style)
-                      const isEditing = editingCell === coordinate
+                      // editingSource gates this: while editing via the formula bar, the grid cell
+                      // stays in display mode so its autoFocus input doesn't steal focus away.
+                      const isEditing = editingCell === coordinate && editingSource === 'grid'
                       // formatValue is presentation-only (spec/08-styles.md) — it never changes what's
                       // stored, only how a formula's cached result or a plain typed value is shown.
                       const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
