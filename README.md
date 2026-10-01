@@ -1,44 +1,48 @@
 # CSVX Web
 
 CSVX Web is the React/Vite demo workbench for opening, inspecting, editing, and exporting CSVX
-files. It is a consumer of the CSVX specification and engine model, not a second definition of the
-format.
+files. It is a consumer of a real engine (`csvx-ts`), not a second definition of the format — see
+`AGENTS.md` and `handoff.md` for the rules and the 2026-10-01 rewrite that made that true.
 
 ## Current scope
 
-The first slice is an accessible, developer-oriented workbench with local editing capabilities:
-
-- Workbook and sheet navigation
-- CSV-backed spreadsheet data display
-- Cell selection with A1 coordinates
-- Package and data-layer context
+- Real `.csvx` open and export, through `csvx-ts/browser` (`loadWorkbookFromZip`,
+  `writeWorkbookToZip`, `validateBuffer`) — not a hand-rolled parser
+- Workbook and sheet navigation, with add/rename/delete
+- CSV-backed spreadsheet data display, with cell selection by A1 coordinate
+- Cell editing (Enter, Space, F2 to start; Enter to commit; Escape to cancel)
+- Append-only row/column addition (`+ Row`, the column header `+` button)
+- A formatting toolbar (bold/italic/underline/text/fill/border color/alignment) that writes literal
+  style fields the engine already understands
+- Formula and cached-value transparency (shown as-is, never recomputed)
+- Validation diagnostics from the engine on load and before export, not invented in React
 - Responsive layout and keyboard-visible focus states
-- Cell editing with Enter, Space, F2, and Escape to cancel
-- Row context menu actions for insert-before, insert-after, and delete
-- LocalStorage persistence for edits during the demo session
 
-The current demo data is represented in the UI while the browser-side CSVX package reader is being
-added. `example.csvx` is the real CSVX package fixture for that integration.
+Not implemented, because no engine implements the underlying behavior yet: cell-type inference,
+computed number formatting, and row/column insert-in-the-middle or delete (these need
+formula-reference rewriting). See `AGENTS.md` for why these are engine tasks, not something to add
+here, and `handoff.md` for what this cost in practice.
+
+`public/example.csvx` is loaded on startup as the demo workbook — a real fixture, not fabricated
+data.
 
 ## Commands
 
 ```bash
 npm install
-npm run dev
+npm run dev       # dev server on port 5174
 npm run build
 npm run preview
-
-# Development server uses port 5174
-npm run dev
 ```
 
-## Example 
+## Regenerating the example fixture
+
 ```bash
-./bin/csvx convert ../csvx-web/example.xlsx ../csvx-web/example.csvx 
+csvx convert example.xlsx public/example.csvx
 ```
 
 ## Direction
 
-The UI will remain separate from CSVX semantics. The browser application should eventually load the
-ZIP package client-side, preserve CSV and `.meta.json` resources, expose formulas and diagnostics,
-and export a valid `.csvx` package without requiring an upload to a server.
+Keep the UI separate from CSVX semantics: this app renders and edits data the engine already
+understands, and never holds a second opinion about what a value, type, or style means. See
+`handoff.md`'s "Immediate next steps" for what's left.
