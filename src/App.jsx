@@ -8,14 +8,18 @@ import { downloadBytes } from './download.js'
 import {
   addSheet,
   appendColumn,
-  appendRow,
   applyCellsFormat,
   cellCSS,
   cellMetadata,
   clearCellsFormat,
   coordinateFor,
+  deleteColumn,
+  deleteRow,
   deleteSheet,
   findSheet,
+  indicesForCoordinate,
+  insertColumn,
+  insertRow,
   renameSheet,
   setCellValue,
 } from './model.js'
@@ -369,7 +373,7 @@ function App() {
       event.preventDefault()
       let next = workbook
       selectedCells.forEach((target) => {
-        const [targetRow, targetColumn] = coordinateToIndices(target)
+        const { row: targetRow, column: targetColumn } = indicesForCoordinate(target)
         next = setCellValue(next, sheet.id, targetRow, targetColumn, '')
       })
       setWorkbook(next)
@@ -390,14 +394,6 @@ function App() {
       beginEdit(row, column, event.key)
     }
   }
-  function coordinateToIndices(coordinate) {
-    const match = coordinate.match(/^([A-Z]+)(\d+)$/)
-    if (!match) return [0, 0]
-    let column = 0
-    for (const char of match[1]) column = column * 26 + (char.charCodeAt(0) - 64)
-    return [Number(match[2]) - 1, column - 1]
-  }
-
   function toggleFont(property) {
     setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { font: { [property]: !allSelectedHaveFont(property) } }))
     cellRefs.current.get(selectedCoordinate)?.focus()
@@ -486,11 +482,46 @@ function App() {
     event.preventDefault()
     setContextMenu({ x: event.clientX, y: event.clientY, kind: 'sheet', index: sheetId })
   }
-  function handleAddRow() {
-    setWorkbook(appendRow(workbook, sheet.id))
-  }
   function handleAddColumn() {
     setWorkbook(appendColumn(workbook, sheet.id))
+  }
+  function openRowContextMenu(event, rowIndex) {
+    event.preventDefault()
+    selectRow(rowIndex, false)
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'row', index: rowIndex })
+  }
+  function openColumnContextMenu(event, columnIndex) {
+    event.preventDefault()
+    selectColumn(columnIndex, false)
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'column', index: columnIndex })
+  }
+  function handleInsertRow(rowIndex) {
+    setWorkbook(insertRow(workbook, sheet.id, rowIndex))
+    setContextMenu(null)
+  }
+  function handleDeleteRow(rowIndex) {
+    if (sheet.records.length <= 1) {
+      setError('A sheet must contain at least one row.')
+      setContextMenu(null)
+      return
+    }
+    setWorkbook(deleteRow(workbook, sheet.id, rowIndex))
+    selectCell(Math.max(0, rowIndex - 1), selectedCell.column)
+    setContextMenu(null)
+  }
+  function handleInsertColumn(columnIndex) {
+    setWorkbook(insertColumn(workbook, sheet.id, columnIndex))
+    setContextMenu(null)
+  }
+  function handleDeleteColumn(columnIndex) {
+    if (sheet.columns.length <= 1) {
+      setError('A sheet must contain at least one column.')
+      setContextMenu(null)
+      return
+    }
+    setWorkbook(deleteColumn(workbook, sheet.id, columnIndex))
+    selectCell(selectedCell.row, Math.max(0, columnIndex - 1))
+    setContextMenu(null)
   }
 
   async function handleOpen(event) {
@@ -607,7 +638,7 @@ function App() {
                 <tr>
                   <th scope="col" className="corner-cell" aria-label="Spreadsheet corner" />
                   {sheet.columns.map((column, index) => (
-                    <th scope="col" key={column.id || index}>
+                    <th scope="col" key={column.id || index} onContextMenu={(e) => openColumnContextMenu(e, index)}>
                       <button
                         type="button"
                         className={`column-header-button ${selectedColumns.has(index) ? 'is-active' : ''}`}
@@ -635,7 +666,7 @@ function App() {
                   const rowIndex = startRow + offset
                   return (
                   <tr key={rowIndex}>
-                    <th scope="row">
+                    <th scope="row" onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
                       <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowIndex + 1}`}>
                         {rowIndex + 1}
                       </button>
@@ -711,7 +742,6 @@ function App() {
               </tbody>
             </table>
           </div>
-          <button type="button" className="button button-quiet" onClick={handleAddRow}>+ Row</button>
         </section>
       </main>
       <footer className="app-footer">
@@ -758,11 +788,27 @@ function App() {
         </div>
         <span className="footer-hint">Enter/F2 edit · Right-click a sheet tab for actions</span>
       </footer>
-      {contextMenu && (
+      {contextMenu && contextMenu.kind === 'sheet' && (
         <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
           <p className="context-menu-label">{workbook.sheets.find((item) => item.id === contextMenu.index)?.name}</p>
           <button type="button" role="menuitem" onClick={() => beginRenameSheet(contextMenu.index, workbook.sheets.find((item) => item.id === contextMenu.index)?.name || '')}>Rename sheet</button>
           <button type="button" role="menuitem" className="danger-action" onClick={() => removeSheet(contextMenu.index)}>Delete sheet</button>
+        </div>
+      )}
+      {contextMenu && contextMenu.kind === 'row' && (
+        <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <p className="context-menu-label">Row {contextMenu.index + 1}</p>
+          <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index)}>Insert row before</button>
+          <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index + 1)}>Insert row after</button>
+          <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteRow(contextMenu.index)}>Delete row</button>
+        </div>
+      )}
+      {contextMenu && contextMenu.kind === 'column' && (
+        <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <p className="context-menu-label">Column {sheet.columns[contextMenu.index]?.name || sheet.columns[contextMenu.index]?.id}</p>
+          <button type="button" role="menuitem" onClick={() => handleInsertColumn(contextMenu.index)}>Insert column before</button>
+          <button type="button" role="menuitem" onClick={() => handleInsertColumn(contextMenu.index + 1)}>Insert column after</button>
+          <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteColumn(contextMenu.index)}>Delete column</button>
         </div>
       )}
     </div>

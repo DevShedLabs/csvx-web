@@ -490,13 +490,6 @@ h1 {
 	overflow: auto;
 }
 
-/* .grid-card is a column flex container with no align-items override, so its flex default
-   (stretch) otherwise forces this button to the container's full width. */
-.grid-card > .button {
-	align-self: flex-start;
-	margin: var(--space-2);
-}
-
 .spreadsheet {
 	min-width: 32rem;
 	width: 100%;
