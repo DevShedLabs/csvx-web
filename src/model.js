@@ -2,8 +2,10 @@
 // produced or will accept back — none of them decide what a value, type, or style *means*. That
 // distinction is the whole point of this rewrite: see AGENTS.md and ../csvx-spec/AGENTS.md rule 5.
 //
-// Specifically NOT here (on purpose, because no engine implements it yet): cell-type inference
-// from raw text, and computed number formatting (parsing "$#,##0.00" and producing "$1,234.56").
+// Specifically NOT here: cell-type inference from raw text (csvx-ts's resolveCellValue), computed
+// number formatting (csvx-ts's formatValue), formula evaluation (csvx-ts's recalculateCells), and
+// deciding which cell metadata survives an edit (csvx-ts's nextCellMetadata) — all genuine CSVX
+// semantics, so all of it is a call into the engine, never a second opinion reimplemented here.
 // Row/column insert and delete (below) DO rewrite formula references on shift — that's lexical
 // reference-adjustment (finding "B2"-shaped tokens and renumbering them), not formula evaluation,
 // so it doesn't cross the line rule 5.1 draws; nothing here parses a formula's actual semantics or
@@ -18,7 +20,7 @@
 // view-only state, local to the browser session, and never writes back into this field — writing
 // a pixel number into it would silently corrupt the original unit on export.
 
-import { columnId, columnIndexFromId, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
+import { columnId, columnIndexFromId, nextCellMetadata, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
 
 export function coordinateFor(columnIndex, rowIndex) {
   return `${columnId(columnIndex)}${rowIndex + 1}`
@@ -64,10 +66,11 @@ export function findSheet(workbook, sheetId) {
 
 /** Sets a cell's raw CSV value. A value starting with "=" is stored as a formula (and the sheet is
  * recalculated via csvx-ts — see recalculateWorkbook — so `cached` and the visible CSV text update
- * immediately); anything else clears any existing `formula`/`cached` metadata on that cell, since a
- * literal value the user just typed and a stale formula result can't both be true at once. Style
- * and validation metadata, which describe the cell rather than its content, are preserved either
- * way. */
+ * immediately); anything else is a literal edit. Which metadata fields survive either kind of edit
+ * (style/validation: yes; type/cached, and formula for a literal edit: no) is decided by csvx-ts's
+ * nextCellMetadata, not here — see spec/05-cell-values.md and AGENTS.md rule 5.2: this app doesn't
+ * get a second opinion about what a stale `type` or `formula` means once the content it described
+ * is gone. */
 export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
   const isFormula = typeof value === 'string' && value.startsWith('=')
   const next = {
@@ -77,19 +80,10 @@ export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
       const records = sheet.records.map((row, index) => (index === rowIndex ? [...row] : row))
       const coordinate = coordinateFor(columnIndex, rowIndex)
       const cells = { ...sheet.cells }
-      if (isFormula) {
-        records[rowIndex][columnIndex] = value
-        const { cached, ...rest } = cells[coordinate] || {}
-        cells[coordinate] = { ...rest, formula: value }
-      } else {
-        records[rowIndex][columnIndex] = value
-        const existing = cells[coordinate]
-        if (existing) {
-          const { formula, cached, ...rest } = existing
-          if (Object.keys(rest).length > 0) cells[coordinate] = rest
-          else delete cells[coordinate]
-        }
-      }
+      records[rowIndex][columnIndex] = value
+      const nextMetadata = nextCellMetadata(cells[coordinate], isFormula ? value : undefined)
+      if (nextMetadata) cells[coordinate] = nextMetadata
+      else delete cells[coordinate]
       return { ...sheet, records, cells }
     }),
   }

@@ -154,7 +154,14 @@ function App() {
   const selectedRawValue = sheet?.records?.[selectedCell.row]?.[selectedCell.column] ?? ''
   const selectedStyle = styleFor(selectedMetadata?.style)
   const selectedAlignment = selectedStyle.alignment?.horizontal || ''
-  const selectedType = selectedMetadata?.type || sheet?.columns?.[selectedCell.column]?.type || ''
+  // The resolved type (via the engine, same as the grid's own display logic) — never a raw
+  // metadata.type read directly, since an untyped cell's effective type (including one inferred
+  // from its literal text, per resolveCellValue) is exactly what the badge should communicate, not
+  // just whatever happens to be explicitly declared. Hidden for a genuinely blank cell — showing
+  // "blank" on every empty cell would just be noise.
+  const selectedDeclaredType = selectedMetadata?.type || sheet?.columns?.[selectedCell.column]?.type
+  const selectedResolvedValue = selectedMetadata?.cached ?? resolveCellValue(selectedRawValue, selectedDeclaredType)
+  const selectedType = selectedResolvedValue.type === 'blank' ? '' : selectedResolvedValue.type
   const selectionStyles = useMemo(
     () => [...selectedCells].map((coordinate) => styleFor(cellMetadata(sheet, coordinate)?.style)),
     [selectedCells, sheet, stylesById],
