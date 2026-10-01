@@ -104,34 +104,40 @@ export function appendColumn(workbook, sheetId) {
 // this returned before) is schema-invalid. Caught by actually exporting and running the real
 // fixture through the canonical validator, not by reasoning about the schema in the abstract.
 // "s<N>" matches the convention csvx-go's XLSX importer already uses for real style ids.
-function nextStyleId(styles) {
+function nextStyleIdCounter(styles) {
   const numericSuffixes = (styles || [])
     .map((style) => /^s(\d+)$/.exec(style.id)?.[1])
     .filter((value) => value !== undefined)
     .map(Number)
-  return `s${numericSuffixes.length ? Math.max(...numericSuffixes) + 1 : 0}`
+  return numericSuffixes.length ? Math.max(...numericSuffixes) + 1 : 0
 }
 
 /** Applies a literal font/fill/border/alignment patch to every given cell, each getting its own
  * new style record. This does not dedupe identical styles across cells — a real editor would want
  * to, but that's a quality improvement, not a correctness one; tracked as a known simplification
- * rather than solved here. */
+ * rather than solved here.
+ *
+ * The id counter is computed once up front and incremented locally rather than rescanning `styles`
+ * per cell (as a naive `nextStyleId(styles)` call per iteration would) — for a large selection
+ * (e.g. a whole column), rescanning plus `[...styles, style]` per cell made this O(n²). */
 export function applyCellsFormat(workbook, sheetId, coordinates, patch) {
-  let styles = workbook.styles ? [...workbook.styles] : []
+  const styles = workbook.styles ? [...workbook.styles] : []
   const sheet = findSheet(workbook, sheetId)
   const cells = { ...sheet.cells }
+  let nextId = nextStyleIdCounter(styles)
   coordinates.forEach((coordinate) => {
     const existingMeta = cells[coordinate] || {}
     const existingStyle = styleForId(styles, existingMeta.style)
     const style = {
-      id: nextStyleId(styles),
+      id: `s${nextId}`,
       ...(existingStyle.numberFormat ? { numberFormat: existingStyle.numberFormat } : {}),
       font: { ...existingStyle.font, ...patch.font },
       fill: { ...existingStyle.fill, ...patch.fill },
       border: { ...existingStyle.border, ...patch.border },
       alignment: { ...existingStyle.alignment, ...patch.alignment },
     }
-    styles = [...styles, style]
+    nextId += 1
+    styles.push(style)
     cells[coordinate] = { ...existingMeta, style: style.id }
   })
   return { ...workbook, styles, sheets: workbook.sheets.map((item) => (item.id === sheetId ? { ...item, cells } : item)) }

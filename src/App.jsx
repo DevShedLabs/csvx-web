@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadWorkbookFromZip, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
+// loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
+// validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
+// loadWorkbookFromZip internally and classifies the thrown error, so calling both re-parses the
+// whole ZIP/CSV/JSON a second time for the same information.
 import { downloadBytes } from './download.js'
 import {
   addSheet,
@@ -14,21 +18,25 @@ import {
   findSheet,
   renameSheet,
   setCellValue,
-  styleForId,
 } from './model.js'
 
 const DEMO_URL = '/example.csvx'
 const DEFAULT_COLUMN_WIDTH = 128
 const MIN_COLUMN_WIDTH = 48
 const ARROW_DIRECTIONS = { ArrowLeft: { column: -1, row: 0 }, ArrowRight: { column: 1, row: 0 }, ArrowUp: { column: 0, row: -1 }, ArrowDown: { column: 0, row: 1 } }
+// Must match `.spreadsheet th, .spreadsheet td { height: 1.75rem }` in index.css (1.75rem * 16px).
+// Real imported workbooks run to thousands of rows (example.csvx has ~1000); rendering every row
+// as a live DOM <tr> of <button>s made every click/format action re-render tens of thousands of
+// nodes. Only rows within ROW_OVERSCAN of the visible scroll window are actually mounted.
+const ROW_HEIGHT = 28
+const ROW_OVERSCAN = 10
 
 async function loadWorkbookFromBuffer(buffer) {
-  const diagnostics = await validateBuffer(buffer)
-  if (!diagnostics.valid) {
-    const message = diagnostics.errors[0]?.message || 'Package failed to load'
-    throw new Error(message)
+  try {
+    return await loadWorkbookFromZip(buffer)
+  } catch (loadError) {
+    throw new Error(loadError.message || 'Package failed to load')
   }
-  return loadWorkbookFromZip(buffer)
 }
 
 function App() {
@@ -40,6 +48,10 @@ function App() {
   const [selectedColumns, setSelectedColumns] = useState(() => new Set())
   const [selectedRows, setSelectedRows] = useState(() => new Set())
   const [editingCell, setEditingCell] = useState(null)
+  // Only the *initial* value of the in-progress edit — the <input> below is uncontrolled
+  // (defaultValue, not value) so keystrokes don't setState on every character and re-render the
+  // whole grid. Commit reads the live value from editorRef instead; draftValue is just the
+  // fallback for the instant before that ref attaches.
   const [draftValue, setDraftValue] = useState('')
   const [contextMenu, setContextMenu] = useState(null)
   const [error, setError] = useState('')
@@ -49,6 +61,12 @@ function App() {
   // model.js for why: the schema's declared width is in an undefined (and, for real imported
   // data, non-pixel) unit, so resizing here must not overwrite it.
   const [columnWidthOverrides, setColumnWidthOverrides] = useState({})
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+  // Guards the demo-fixture fetch below against clobbering a workbook the user opened themselves
+  // while that fetch was still in flight — without this, a slow demo-fetch response arriving after
+  // a manual Open would silently overwrite the user's file with the fixture.
+  const userOpenedRef = useRef(false)
   const inputRef = useRef(null)
   const editorRef = useRef(null)
   const cellRefs = useRef(new Map())
@@ -58,15 +76,28 @@ function App() {
   const sheetNameInputRef = useRef(null)
 
   const sheet = useMemo(() => (workbook ? findSheet(workbook, activeSheetId) : null), [workbook, activeSheetId])
+  // styleForId does a linear scan of workbook.styles. The whole table re-renders on every click or
+  // selection change, and (without this map) every cell in the sheet would re-run that scan every
+  // time — O(rows * columns * styles) per click, which is the actual source of the click-to-focus
+  // lag on any workbook with a non-trivial number of styles. Built once per workbook.styles
+  // reference instead.
+  const stylesById = useMemo(() => new Map((workbook?.styles || []).map((style) => [style.id, style])), [workbook?.styles])
+  const styleFor = (id) => stylesById.get(id) || {}
+  const totalRows = sheet?.records?.length || 0
+  const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - ROW_OVERSCAN)
+  const visibleRowCount = Math.ceil((viewportHeight || 0) / ROW_HEIGHT) + ROW_OVERSCAN * 2
+  const endRow = Math.min(totalRows, startRow + visibleRowCount)
+  const topSpacerHeight = startRow * ROW_HEIGHT
+  const bottomSpacerHeight = (totalRows - endRow) * ROW_HEIGHT
   const selectedCoordinate = coordinateFor(selectedCell.column, selectedCell.row)
   const selectedMetadata = cellMetadata(sheet, selectedCoordinate)
   const selectedRawValue = sheet?.records?.[selectedCell.row]?.[selectedCell.column] ?? ''
-  const selectedStyle = styleForId(workbook?.styles, selectedMetadata?.style)
+  const selectedStyle = styleFor(selectedMetadata?.style)
   const selectedAlignment = selectedStyle.alignment?.horizontal || ''
   const selectedType = selectedMetadata?.type || sheet?.columns?.[selectedCell.column]?.type || ''
   const selectionStyles = useMemo(
-    () => [...selectedCells].map((coordinate) => styleForId(workbook?.styles, cellMetadata(sheet, coordinate)?.style)),
-    [selectedCells, sheet, workbook],
+    () => [...selectedCells].map((coordinate) => styleFor(cellMetadata(sheet, coordinate)?.style)),
+    [selectedCells, sheet, stylesById],
   )
   const allSelectedHaveFont = (property) => selectionStyles.length > 0 && selectionStyles.every((style) => style.font?.[property])
   const allSelectedHaveAlignment = (value) => selectionStyles.length > 0 && selectionStyles.every((style) => (style.alignment?.horizontal || '') === value)
@@ -80,7 +111,7 @@ function App() {
       .then((response) => response.arrayBuffer())
       .then(async (buffer) => {
         const loaded = await loadWorkbookFromBuffer(buffer)
-        if (cancelled) return
+        if (cancelled || userOpenedRef.current) return
         setWorkbook(loaded)
         setFileName('example.csvx')
         setActiveSheetId(loaded.sheets[0]?.id)
@@ -114,6 +145,24 @@ function App() {
     document.addEventListener('click', closeMenu)
     return () => document.removeEventListener('click', closeMenu)
   }, [])
+  // Tracks the scroller's height so the row-window size (see ROW_HEIGHT/ROW_OVERSCAN above) can
+  // adapt to the actual viewport instead of a guessed row count.
+  useEffect(() => {
+    const el = tableScrollRef.current
+    if (!el) return
+    const updateHeight = () => setViewportHeight(el.clientHeight)
+    updateHeight()
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [sheet?.id])
+  // New sheet (different row count) starts scrolled to the top; otherwise a stale scrollTop from a
+  // longer sheet could compute a row window past the end of a shorter one.
+  useEffect(() => {
+    const el = tableScrollRef.current
+    if (el) el.scrollTop = 0
+    setScrollTop(0)
+  }, [sheet?.id])
   useEffect(() => {
     const el = tableScrollRef.current
     if (!el) return
@@ -166,7 +215,24 @@ function App() {
     }
   }, [contextMenu])
 
+  // Brings a row into the mounted window (see ROW_HEIGHT/ROW_OVERSCAN) before anything tries to
+  // focus it — needed for keyboard navigation (moveSelection), since a row outside the current
+  // scroll window has no DOM node to focus yet. A no-op when the row is already visible.
+  function ensureRowVisible(rowIndex) {
+    const el = tableScrollRef.current
+    if (!el) return
+    const rowTop = rowIndex * ROW_HEIGHT
+    const rowBottom = rowTop + ROW_HEIGHT
+    let nextScrollTop = el.scrollTop
+    if (rowTop < el.scrollTop) nextScrollTop = rowTop
+    else if (rowBottom > el.scrollTop + el.clientHeight) nextScrollTop = rowBottom - el.clientHeight
+    if (nextScrollTop !== el.scrollTop) {
+      el.scrollTop = nextScrollTop
+      setScrollTop(nextScrollTop)
+    }
+  }
   function selectCell(row, column) {
+    ensureRowVisible(row)
     setSelectedCell({ row, column })
     setSelectedCells(new Set([coordinateFor(column, row)]))
     setSelectedColumns(new Set())
@@ -392,6 +458,7 @@ function App() {
   async function handleOpen(event) {
     const file = event.target.files?.[0]
     if (!file) return
+    userOpenedRef.current = true
     try {
       const buffer = await file.arrayBuffer()
       const loaded = await loadWorkbookFromBuffer(buffer)
@@ -489,7 +556,7 @@ function App() {
         </section>
         <section className="grid-card" aria-labelledby="grid-title">
           <h3 id="grid-title" className="sr-only">{sheet.name} spreadsheet data</h3>
-          <div className="table-scroll" ref={tableScrollRef}>
+          <div className="table-scroll" ref={tableScrollRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
             <table className="spreadsheet">
               <caption className="sr-only">CSV-backed data in {sheet.name}. Press Enter, Space, or F2 to edit a cell.</caption>
               <colgroup>
@@ -521,7 +588,14 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {sheet.records.map((row, rowIndex) => (
+                {topSpacerHeight > 0 && (
+                  <tr aria-hidden="true" style={{ height: topSpacerHeight }}>
+                    <td colSpan={sheet.columns.length + 2} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
+                {sheet.records.slice(startRow, endRow).map((row, offset) => {
+                  const rowIndex = startRow + offset
+                  return (
                   <tr key={rowIndex}>
                     <th scope="row">
                       <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowIndex + 1}`}>
@@ -532,7 +606,7 @@ function App() {
                       const coordinate = coordinateFor(columnIndex, rowIndex)
                       const value = row[columnIndex] || ''
                       const metadata = cellMetadata(sheet, coordinate)
-                      const style = styleForId(workbook.styles, metadata?.style)
+                      const style = styleFor(metadata?.style)
                       const isEditing = editingCell === coordinate
                       const displayValue = metadata?.cached?.value ?? value
                       return (
@@ -544,8 +618,7 @@ function App() {
                               type="text"
                               className="cell-editor"
                               style={cellCSS(style)}
-                              value={draftValue}
-                              onChange={(e) => setDraftValue(e.currentTarget.value)}
+                              defaultValue={draftValue}
                               onBlur={commitEdit}
                               onKeyDown={(e) => {
                                 if (e.metaKey || e.ctrlKey) {
@@ -590,7 +663,13 @@ function App() {
                     })}
                     <td />
                   </tr>
-                ))}
+                  )
+                })}
+                {bottomSpacerHeight > 0 && (
+                  <tr aria-hidden="true" style={{ height: bottomSpacerHeight }}>
+                    <td colSpan={sheet.columns.length + 2} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
