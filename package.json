@@ -13,7 +13,7 @@
 		"vite": "latest",
 		"react": "latest",
 		"react-dom": "latest",
-		"csvx-ts": "github:DevShedLabs/csvx-ts#v0.1.4"
+		"csvx-ts": "github:DevShedLabs/csvx-ts#v0.1.5"
 	},
 	"devDependencies": {}
 }
