@@ -18,7 +18,7 @@
 // resize converts through csvx-ts's pixelsToColumnWidth (see setColumnWidth below) rather than
 // writing a raw pixel number into this field, which would corrupt it for any other reader.
 
-import { HEADER_ROW, canonicalCellText, columnId, columnIndexFromId, coordinateFor, indicesForCoordinate, nextCellMetadata, pixelsToColumnWidth, rawCellText, recalculateWorkbook, resolveCellValue, rowIndexFor, rowNumberFor } from 'csvx-ts/browser'
+import { HEADER_ROW, canonicalCellText, changeCase, columnId, columnIndexFromId, coordinateFor, indicesForCoordinate, nextCellMetadata, pixelsToColumnWidth, rawCellText, recalculateWorkbook, resolveCellValue, rowIndexFor, rowNumberFor } from 'csvx-ts/browser'
 
 // The row convention (header = row 1, record i = row i + 2) and workbook recalculation are engine
 // logic, owned by csvx-ts; they are re-exported here only so the rest of the app has one import site.
@@ -191,6 +191,29 @@ function setHeaderName(workbook, sheetId, columnIndex, value) {
     }),
   }
   return recalculateWorkbook(next)
+}
+
+/** Applies a text-case conversion (csvx-ts changeCase, spec/05-cell-values.md "Text case") to each
+ * selected cell in one pass. The engine decides which cells are eligible (no formula, resolves to
+ * a string) and what the converted text is; this only walks the selection and writes results back.
+ * A header cell converts the column name. Recalculates once at the end, since formulas can read text. */
+export function applyTextCase(workbook, sheetId, coordinates, mode) {
+  const sheet = findSheet(workbook, sheetId)
+  const records = sheet.records.map((row) => [...row])
+  const columns = [...sheet.columns]
+  coordinates.forEach((coordinate) => {
+    const { row, column } = indicesForCoordinate(coordinate)
+    const meta = sheet.cells?.[coordinate]
+    const declaredType = meta?.type || sheet.columns[column]?.type
+    const options = { declaredType, formula: meta?.formula }
+    if (row < 0) {
+      const column_ = columns[column]
+      if (column_) columns[column] = { ...column_, name: changeCase(column_.name ?? '', mode, options) }
+    } else if (records[row] && column < records[row].length) {
+      records[row][column] = changeCase(records[row][column], mode, options)
+    }
+  })
+  return recalculateWorkbook({ ...workbook, sheets: workbook.sheets.map((item) => (item.id === sheetId ? { ...item, columns, records } : item)) })
 }
 
 /** Appends a blank row at the end of a sheet. Safe without formula-reference rewriting because

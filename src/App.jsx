@@ -11,6 +11,7 @@ import {
   addSheet,
   appendColumn,
   applyCellsFormat,
+  applyTextCase,
   cellCSS,
   cellBorderCSS,
   setPrintSettings,
@@ -652,6 +653,10 @@ function App() {
     setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { border: { top: { style: 'thin', color }, right: { style: 'thin', color }, bottom: { style: 'thin', color }, left: { style: 'thin', color } } }))
     cellRefs.current.get(selectedCoordinate)?.focus()
   }
+  function changeTextCase(mode) {
+    setWorkbook(applyTextCase(workbook, sheet.id, selectedCells, mode))
+    cellRefs.current.get(selectedCoordinate)?.focus()
+  }
   function clearFormatting() {
     setWorkbook(clearCellsFormat(workbook, sheet.id, selectedCells))
     cellRefs.current.get(selectedCoordinate)?.focus()
@@ -1021,6 +1026,10 @@ function App() {
             </label>
             <button type="button" className={`format-button ${allSelectedAreCurrency ? 'is-active' : ''}`} aria-pressed={allSelectedAreCurrency} onMouseDown={(e) => e.preventDefault()} onClick={toggleCurrency} aria-label="Currency (USD)" title="Format as currency (USD)">$</button>
             <button type="button" className="format-button format-clear" onMouseDown={(e) => e.preventDefault()} onClick={clearFormatting} aria-label="Clear formatting" title="Clear formatting">Clear</button>
+            <span className="format-divider" aria-hidden="true" />
+            <button type="button" className="format-button format-case" onMouseDown={(e) => e.preventDefault()} onClick={() => changeTextCase('upper')} aria-label="Uppercase" title="Uppercase">AA</button>
+            <button type="button" className="format-button format-case" onMouseDown={(e) => e.preventDefault()} onClick={() => changeTextCase('title')} aria-label="Capitalize each word" title="First letter of each word">Aa</button>
+            <button type="button" className="format-button format-case" onMouseDown={(e) => e.preventDefault()} onClick={() => changeTextCase('lower')} aria-label="Lowercase" title="Lowercase">aa</button>
             <span className="format-divider" aria-hidden="true" />
             <button type="button" className={`format-button ${allSelectedHaveAlignment('left') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('left')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('left')} aria-label="Align left" title="Align left"><AlignIcon variant="left" /></button>
             <button type="button" className={`format-button ${allSelectedHaveAlignment('center') ? 'is-active' : ''}`} aria-pressed={allSelectedHaveAlignment('center')} onMouseDown={(e) => e.preventDefault()} onClick={() => setAlignment('center')} aria-label="Align center" title="Align center"><AlignIcon variant="center" /></button>
