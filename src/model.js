@@ -31,6 +31,47 @@ export function indicesForCoordinate(coordinate) {
   return { column: columnIndexFromId(match[1]), row: Number(match[2]) - 1 }
 }
 
+/** The "used range" (like Excel's default print area): row and column counts up to the last cell
+ * that prints something — a value, a formula, or a visible fill or border. Formatting that draws
+ * nothing (number format, font only), common on imported XLSX files that format thousands of empty
+ * rows, doesn't count. Always at least 1×1. */
+export function usedRange(sheet, styles) {
+  const byId = new Map((styles || []).map((style) => [style.id, style]))
+  let rows = 1
+  let columns = 1
+  ;(sheet?.records || []).forEach((record, rowIndex) => {
+    ;(sheet.columns || []).forEach((_, columnIndex) => {
+      const metadata = sheet.cells?.[coordinateFor(columnIndex, rowIndex)]
+      const style = metadata?.style ? byId.get(metadata.style) : undefined
+      const drawsSomething = metadata?.formula || style?.fill?.color || ['top', 'right', 'bottom', 'left'].some((edge) => declaredEdge(style, edge))
+      if (record[columnIndex] || drawsSomething) {
+        rows = Math.max(rows, rowIndex + 1)
+        columns = Math.max(columns, columnIndex + 1)
+      }
+    })
+  })
+  return { rows, columns }
+}
+
+/** Merges `patch` into a sheet's `print` settings (spec/03-sheets.md). A key set to undefined or
+ * null is removed, so it falls back to the spec default; an empty result removes `print` entirely.
+ * Properties this app doesn't know about are left alone, as the spec requires. */
+export function setPrintSettings(workbook, sheetId, patch) {
+  return {
+    ...workbook,
+    sheets: workbook.sheets.map((sheet) => {
+      if (sheet.id !== sheetId) return sheet
+      const next = { ...sheet.print }
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined || value === null) delete next[key]
+        else next[key] = value
+      }
+      const { print, ...rest } = sheet
+      return Object.keys(next).length > 0 ? { ...rest, print: next } : rest
+    }),
+  }
+}
+
 export function cellMetadata(sheet, coordinate) {
   return sheet?.cells?.[coordinate]
 }

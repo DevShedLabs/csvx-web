@@ -772,3 +772,173 @@ h1 {
 		animation-iteration-count: 1 !important;
 	}
 }
+
+/* Print view (see PrintView.jsx): a settings panel plus a preview of the real pages. */
+.print-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: grid;
+	grid-template-columns: 18rem 1fr;
+	background: #e8eaed;
+}
+
+.print-panel {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	overflow-y: auto;
+	padding: var(--space-5);
+	border-right: 0.0625rem solid var(--border);
+	background: var(--surface);
+}
+
+.print-panel h2 {
+	margin: 0;
+	font-size: 1.125rem;
+}
+
+.print-summary {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.8125rem;
+}
+
+.print-actions {
+	display: flex;
+	gap: var(--space-2);
+}
+
+.print-field {
+	display: grid;
+	gap: var(--space-1);
+	font-size: 0.8125rem;
+	color: var(--muted);
+}
+
+.print-field select,
+.print-field input {
+	min-height: 2.25rem;
+	padding: 0 var(--space-2);
+	border: 0.0625rem solid var(--border-strong);
+	border-radius: var(--radius);
+	color: var(--text);
+	background: var(--surface);
+	font: inherit;
+}
+
+.print-field input[aria-invalid="true"] {
+	border-color: #c5221f;
+}
+
+.print-check {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	font-size: 0.8125rem;
+}
+
+.print-preview {
+	overflow: auto;
+	padding: var(--space-6);
+}
+
+.print-page-wrap {
+	width: max-content;
+	margin: 0 auto var(--space-6);
+}
+
+.print-page {
+	background: #fff;
+	box-shadow: 0 0.0625rem 0.5rem rgba(0, 0, 0, 0.25);
+}
+
+.print-page-body {
+	overflow: hidden;
+}
+
+.print-page-label {
+	margin: var(--space-2) 0 0;
+	color: var(--muted);
+	font-size: 0.75rem;
+	text-align: center;
+}
+
+.print-table {
+	table-layout: fixed;
+	border-collapse: collapse;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.8125rem;
+	color: #000;
+}
+
+.print-table td {
+	padding: 0 0.25rem;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: clip;
+}
+
+.print-table.has-gridlines td {
+	border: 0.0625rem solid #bdc1c6;
+}
+
+@media (max-width: 48rem) {
+	.print-overlay {
+		grid-template-columns: 1fr;
+		grid-template-rows: auto 1fr;
+	}
+}
+
+/* Printing sends only the preview's pages, each exactly one sheet of paper (@page is set by
+ * PrintView from the paper size and orientation, with zero margin — the page's own padding is the
+ * margin). Fills and font colors are forced to print. */
+@media print {
+	:root,
+	html,
+	body {
+		overflow: visible;
+		background: #fff;
+	}
+
+	.app-shell:has(.print-overlay) > :not(.print-overlay) {
+		display: none !important;
+	}
+
+	.app-shell {
+		display: block;
+		height: auto;
+	}
+
+	.print-overlay {
+		position: static;
+		display: block;
+		background: #fff;
+	}
+
+	.print-panel,
+	.print-page-label {
+		display: none;
+	}
+
+	.print-preview {
+		overflow: visible;
+		padding: 0;
+	}
+
+	.print-page-wrap {
+		width: auto;
+		margin: 0;
+		break-after: page;
+	}
+
+	.print-page-wrap:last-child {
+		break-after: auto;
+	}
+
+	.print-page {
+		box-shadow: none;
+		-webkit-print-color-adjust: exact;
+		print-color-adjust: exact;
+	}
+}

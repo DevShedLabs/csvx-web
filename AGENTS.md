@@ -36,3 +36,10 @@ change here. The short version for this repo specifically:
   layout) is fine to keep here. A second opinion about what a value, type, or style *means* is not.
 
 See `../csvx-spec/AGENTS.md` for full detail and the reasoning behind these rules.
+- Print is implemented as a Google-Sheets-style Print view (`src/PrintView.jsx`, `src/print.js`).
+  Pagination is layout — `spec/03-sheets.md` ("Print settings") defines the settings and says
+  pagination is the renderer's job — so it lives here, free of React so it can move into an engine.
+  Every print setting is read from and written to the sheet's `print` object so it round-trips; never
+  keep a print setting as UI-only state. The used-range rule (`usedRange` in `src/model.js`) is also
+  from the spec.
+

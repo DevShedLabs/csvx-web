@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import PrintView from './PrintView.jsx'
 import { columnWidthToPixels, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
 // loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
 // validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
@@ -11,6 +13,7 @@ import {
   applyCellsFormat,
   cellCSS,
   cellBorderCSS,
+  setPrintSettings,
   borderColorOf,
   cellMetadata,
   clearCellsFormat,
@@ -146,6 +149,7 @@ function App() {
   const colRefs = useRef(new Map())
   const contextMenuRef = useRef(null)
   const tableScrollRef = useRef(null)
+  const [printOpen, setPrintOpen] = useState(false)
   const sheetNameInputRef = useRef(null)
 
   const sheet = useMemo(() => (workbook ? findSheet(workbook, activeSheetId) : null), [workbook, activeSheetId])
@@ -157,6 +161,7 @@ function App() {
   const stylesById = useMemo(() => new Map((workbook?.styles || []).map((style) => [style.id, style])), [workbook?.styles])
   const styleFor = (id) => stylesById.get(id) || {}
   const totalRows = sheet?.records?.length || 0
+  const columnCount = sheet?.columns?.length || 0
   const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - ROW_OVERSCAN)
   const visibleRowCount = Math.ceil((viewportHeight || 0) / ROW_HEIGHT) + ROW_OVERSCAN * 2
   const endRow = Math.min(totalRows, startRow + visibleRowCount)
@@ -226,6 +231,14 @@ function App() {
     document.addEventListener('click', closeMenu)
     return () => document.removeEventListener('click', closeMenu)
   }, [])
+  // Any way of printing (Cmd/Ctrl+P, the browser menu) goes through the Print view, so the output
+  // is always the paginated pages and never the live grid. flushSync renders the view before the
+  // browser snapshots the page.
+  useEffect(() => {
+    const open = () => flushSync(() => setPrintOpen(true))
+    window.addEventListener('beforeprint', open)
+    return () => window.removeEventListener('beforeprint', open)
+  }, [])
   // Tracks the scroller's height so the row-window size (see ROW_HEIGHT/ROW_OVERSCAN above) can
   // adapt to the actual viewport instead of a guessed row count.
   useEffect(() => {
@@ -282,6 +295,9 @@ function App() {
         // Cmd/Ctrl+A would otherwise select the whole painted DOM, not the sheet's cells.
         event.preventDefault()
         selectAll()
+      } else if (key === 'p') {
+        event.preventDefault()
+        setPrintOpen(true)
       } else if (key === 's') {
         // Saves in place instead of letting the browser try to "Save page as…".
         event.preventDefault()
@@ -358,6 +374,13 @@ function App() {
   }
   function neighborStyles(row, column) {
     return { above: styleAt(row - 1, column), below: styleAt(row + 1, column), left: styleAt(row, column - 1), right: styleAt(row, column + 1) }
+  }
+  function displayAt(row, column) {
+    const metadata = cellMetadata(sheet, coordinateFor(column, row))
+    const style = styleFor(metadata?.style)
+    const declaredType = metadata?.type || sheet.columns[column]?.type
+    const cellValue = metadata?.cached ?? resolveCellValue(sheet.records[row]?.[column] || '', declaredType, style.numberFormat)
+    return formatValue(cellValue, style.numberFormat)
   }
   function selectAll() {
     const coordinates = []
@@ -726,6 +749,7 @@ function App() {
         <nav className="top-actions" aria-label="File actions">
           <input ref={inputRef} type="file" accept=".csvx,application/zip" onChange={handleOpenInputChange} className="sr-only" aria-label="Open CSVX package" />
           <button type="button" className="button button-quiet" onClick={handleOpenClick}>Open</button>
+          <button type="button" className="button button-quiet" onClick={() => setPrintOpen(true)} title="Print (Cmd/Ctrl+P)">Print…</button>
           <button type="button" className="button button-quiet" onClick={handleSaveAs} title="Save a copy to a new file">Save As…</button>
           <button type="button" className="button button-primary" onClick={handleSave} title="Save (Cmd/Ctrl+S)">Save</button>
         </nav>
@@ -804,7 +828,7 @@ function App() {
               <caption className="sr-only">CSV-backed data in {sheet.name}. Press Enter, Space, or F2 to edit a cell.</caption>
               <colgroup>
                 <col style={{ width: '3rem' }} />
-                {sheet.columns.map((column, index) => (
+                {sheet.columns.slice(0, columnCount).map((column, index) => (
                   <col key={column.id || index} ref={(el) => { if (el) colRefs.current.set(index, el); else colRefs.current.delete(index) }} style={{ width: `${pixelWidthForColumn(column)}px` }} />
                 ))}
               </colgroup>
@@ -847,7 +871,7 @@ function App() {
                         {rowIndex + 1}
                       </button>
                     </th>
-                    {sheet.columns.map((_, columnIndex) => {
+                    {sheet.columns.slice(0, columnCount).map((_, columnIndex) => {
                       const coordinate = coordinateFor(columnIndex, rowIndex)
                       const value = row[columnIndex] || ''
                       const metadata = cellMetadata(sheet, coordinate)
@@ -926,6 +950,18 @@ function App() {
           </div>
         </section>
       </main>
+      {printOpen && (
+        <PrintView
+          sheet={sheet}
+          styles={workbook.styles}
+          print={sheet.print}
+          columnWidthPx={pixelWidthForColumn}
+          styleAt={(row, column) => styleAt(row, column)}
+          displayAt={displayAt}
+          onChange={(patch) => setWorkbook(setPrintSettings(workbook, sheet.id, patch))}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
       <footer className="app-footer">
         <nav className="sheet-tabs" aria-label="Workbook sheets">
           <span className="sheet-tabs-label">Sheets<span className="count">{workbook.sheets.length}</span></span>
