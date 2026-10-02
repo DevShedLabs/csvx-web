@@ -204,13 +204,13 @@ export function applyTextCase(workbook, sheetId, coordinates, mode) {
   coordinates.forEach((coordinate) => {
     const { row, column } = indicesForCoordinate(coordinate)
     const meta = sheet.cells?.[coordinate]
-    const declaredType = meta?.type || sheet.columns[column]?.type
-    const options = { declaredType, formula: meta?.formula }
     if (row < 0) {
+      // A header cell is a column name: always a string, whatever type the column below declares.
       const column_ = columns[column]
-      if (column_) columns[column] = { ...column_, name: changeCase(column_.name ?? '', mode, options) }
+      if (column_) columns[column] = { ...column_, name: changeCase(column_.name ?? '', mode, { declaredType: 'string' }) }
     } else if (records[row] && column < records[row].length) {
-      records[row][column] = changeCase(records[row][column], mode, options)
+      const declaredType = meta?.type || sheet.columns[column]?.type
+      records[row][column] = changeCase(records[row][column], mode, { declaredType, formula: meta?.formula })
     }
   })
   return recalculateWorkbook({ ...workbook, sheets: workbook.sheets.map((item) => (item.id === sheetId ? { ...item, columns, records } : item)) })
