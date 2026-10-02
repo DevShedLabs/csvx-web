@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import PrintView from './PrintView.jsx'
-import { columnId, columnWidthToPixels, rowNumberFor, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
+import { columnId, columnWidthToPixels, importCSV, rowNumberFor, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
 // loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
 // validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
 // loadWorkbookFromZip internally and classifies the thrown error, so calling both re-parses the
@@ -46,6 +46,17 @@ const USD_NUMBER_FORMAT = '"$"#,##0.00'
 // the classic <input type="file"> and Save always falls back to a download (Save As behavior).
 const SUPPORTS_FILE_SYSTEM_ACCESS = typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function'
 const CSVX_PICKER_TYPES = [{ description: 'CSVX workbook', accept: { 'application/zip': ['.csvx'] } }]
+// Open also takes a plain CSV, which csvx-ts's importCSV (spec 11-import-export.md 11.1) converts.
+// One combined entry so both extensions show by default (a second entry hides CSV behind the
+// picker's file-type dropdown).
+const OPEN_PICKER_TYPES = [{ description: 'CSVX workbook or CSV file', accept: { 'application/zip': ['.csvx'], 'text/csv': ['.csv'] } }]
+const CSV_DELIMITERS = [
+  { label: 'Comma (,)', value: ',' },
+  { label: 'Semicolon (;)', value: ';' },
+  { label: 'Tab', value: '\t' },
+  { label: 'Pipe (|)', value: '|' },
+]
+const isCSVFile = (file) => /\.csv$/i.test(file.name) || file.type === 'text/csv'
 
 // Column.width is in XLSX character-width units, per spec/03-sheets.md — columnWidthToPixels
 // (csvx-ts) is the one canonical conversion every engine agrees on; a resize writes back through
@@ -126,6 +137,9 @@ function App() {
   const [editRevision, setEditRevision] = useState(0)
   const [contextMenu, setContextMenu] = useState(null)
   const [error, setError] = useState('')
+  // A CSV picked in Open, waiting for the user to confirm the import options (UI state only).
+  const [pendingCSV, setPendingCSV] = useState(null)
+  const [importNotice, setImportNotice] = useState('')
   const [renamingSheetId, setRenamingSheetId] = useState(null)
   const [sheetNameDraft, setSheetNameDraft] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
@@ -760,6 +774,11 @@ function App() {
 
   async function openFile(file) {
     userOpenedRef.current = true
+    if (isCSVFile(file)) {
+      setPendingCSV({ file, header: true, infer: true, delimiter: ',' })
+      return
+    }
+    setImportNotice('')
     const buffer = await file.arrayBuffer()
     const loaded = await loadWorkbookFromBuffer(buffer)
     setWorkbook(loaded)
@@ -767,6 +786,25 @@ function App() {
     setActiveSheetId(loaded.sheets[0]?.id)
     selectCell(0, 0)
     setError('')
+  }
+  // Converts the pending CSV with the engine; the app only supplies the options the user chose.
+  async function confirmCSVImport() {
+    const { file, header, infer, delimiter } = pendingCSV
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const stem = file.name.replace(/\.[^.]*$/, '')
+      const { workbook: imported, warnings } = importCSV(bytes, { header, infer, delimiter, name: stem || undefined })
+      fileHandleRef.current = null
+      setWorkbook(imported)
+      setFileName(`${stem || 'workbook'}.csvx`)
+      setActiveSheetId(imported.sheets[0]?.id)
+      selectCell(0, 0)
+      setError('')
+      setImportNotice(warnings.length ? `Imported with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}: ${warnings.slice(0, 3).map((w) => `${w.location}: ${w.reason}`).join('; ')}${warnings.length > 3 ? '; …' : ''}` : '')
+    } catch (importError) {
+      setError(`Could not import CSV: ${importError.message}`)
+    }
+    setPendingCSV(null)
   }
   // Classic fallback path: browsers without the File System Access API (Firefox, Safari) or a user
   // who dismisses the native picker's capability in favor of a plain file input. No handle means
@@ -788,9 +826,10 @@ function App() {
       return
     }
     try {
-      const [handle] = await window.showOpenFilePicker({ types: CSVX_PICKER_TYPES })
+      const [handle] = await window.showOpenFilePicker({ types: OPEN_PICKER_TYPES })
       const file = await handle.getFile()
-      fileHandleRef.current = handle
+      // A CSV has no CSVX handle to save back to; Save falls back to Save As (.csvx).
+      fileHandleRef.current = isCSVFile(file) ? null : handle
       await openFile(file)
     } catch (pickerError) {
       if (pickerError.name === 'AbortError') return
@@ -850,12 +889,46 @@ function App() {
       setError(saveError.message)
     }
   }
+  const importDialog = pendingCSV && (
+  <div className="import-overlay" role="dialog" aria-modal="true" aria-labelledby="import-title">
+            <form
+              className="import-dialog"
+              onSubmit={(event) => {
+                event.preventDefault()
+                confirmCSVImport()
+              }}
+            >
+              <h2 id="import-title">Import CSV</h2>
+              <p className="muted">{pendingCSV.file.name} will be converted to a CSVX workbook.</p>
+              <label>
+                <input type="checkbox" checked={pendingCSV.header} onChange={(event) => setPendingCSV({ ...pendingCSV, header: event.target.checked })} /> First row is a header
+              </label>
+              <label>
+                <input type="checkbox" checked={pendingCSV.infer} onChange={(event) => setPendingCSV({ ...pendingCSV, infer: event.target.checked })} /> Detect column types
+              </label>
+              <label>
+                Delimiter{' '}
+                <select value={pendingCSV.delimiter} onChange={(event) => setPendingCSV({ ...pendingCSV, delimiter: event.target.value })}>
+                  {CSV_DELIMITERS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="import-actions">
+                <button type="button" className="button button-quiet" onClick={() => setPendingCSV(null)}>Cancel</button>
+                <button type="submit" className="button button-primary" autoFocus>Import</button>
+              </div>
+            </form>
+          </div>
+  )
+
   if (!workbook || !sheet) {
     return (
       <div className="app-shell">
         <main id="main-content" className="main-content" tabIndex="-1">
           {error ? <p role="alert">{error}</p> : <p role="status">Loading…</p>}
         </main>
+        {importDialog}
       </div>
     )
   }
@@ -878,15 +951,17 @@ function App() {
           <span className="muted">Core {workbook.version}</span>
         </div>
         <nav className="top-actions" aria-label="File actions">
-          <input ref={inputRef} type="file" accept=".csvx,application/zip" onChange={handleOpenInputChange} className="sr-only" aria-label="Open CSVX package" />
+          <input ref={inputRef} type="file" accept=".csvx,.csv,application/zip,text/csv" onChange={handleOpenInputChange} className="sr-only" aria-label="Open CSVX package or CSV file" />
           <button type="button" className="button button-quiet" onClick={handleOpenClick}>Open</button>
           <button type="button" className="button button-quiet" onClick={() => setPrintOpen(true)} title="Print (Cmd/Ctrl+P)">Print…</button>
           <button type="button" className="button button-quiet" onClick={handleSaveAs} title="Save a copy to a new file">Save As…</button>
           <button type="button" className="button button-primary" onClick={handleSave} title="Save (Cmd/Ctrl+S)">Save</button>
         </nav>
       </header>
+      {importDialog}
       <main id="main-content" className="main-content" tabIndex="-1">
         {error && <p role="alert">{error}</p>}
+        {importNotice && <p role="status" className="import-notice">{importNotice}</p>}
         <section className="formula-panel" aria-label="Cell inspector">
           <div className="name-box">{selectedCoordinate}</div>
           <div className="formula-symbol" aria-hidden="true">fx</div>
