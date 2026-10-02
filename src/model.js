@@ -45,7 +45,6 @@ export function cellCSS(style) {
   const font = style.font || {}
   const fill = style.fill || {}
   const alignment = style.alignment || {}
-  const border = style.border || {}
   return {
     color: font.color || undefined,
     backgroundColor: fill.color || undefined,
@@ -54,8 +53,43 @@ export function cellCSS(style) {
     textDecoration: font.underline ? 'underline' : undefined,
     textAlign: alignment.horizontal || undefined,
     whiteSpace: alignment.wrapText ? 'normal' : 'nowrap',
-    boxShadow: border.color ? `inset 0 0 0 0.0625rem ${border.color}` : undefined,
   }
+}
+
+const BORDER_WIDTHS = { thin: '1px', medium: '2px', thick: '3px', dashed: '1px', dotted: '1px', double: '3px' }
+const BORDER_LINES = { dashed: 'dashed', dotted: 'dotted', double: 'double' }
+
+/** The color to show in the border tool for a style: the shorthand color, else the first declared
+ * edge color (top, right, bottom, left). Undefined when the cell declares none. */
+export function borderColorOf(style) {
+  const border = style?.border || {}
+  return border.color || ['top', 'right', 'bottom', 'left'].map((edge) => border[edge]?.color).find(Boolean)
+}
+
+/** One edge of a style's border as a CSS shorthand, or undefined when nothing is declared.
+ * Top-level `style`/`color` are the all-edges shorthand; a per-edge object overrides them. */
+function declaredEdge(style, edge) {
+  const border = style?.border || {}
+  const declared = { style: border.style, color: border.color, ...border[edge] }
+  if ((!declared.style && !declared.color) || declared.style === 'none') return undefined
+  const lineStyle = declared.style || 'thin'
+  return `${BORDER_WIDTHS[lineStyle] || '1px'} ${BORDER_LINES[lineStyle] || 'solid'} ${declared.color || '#000000'}`
+}
+
+/** Literal mapping of spec/08-styles.md `border` onto a cell's own edges (applied to the `<td>`,
+ * never as an inset outline). A border belongs to the edge shared by two cells, so each edge is
+ * resolved with the neighbor: the later cell in reading order (right/bottom) wins, per the spec.
+ * Doing this here instead of leaving it to `border-collapse` matters: on a tie the collapse rules
+ * favor the left/top cell's default gridline, which would hide a declared left/top edge.
+ * Edges with no declared border return nothing so the default gridlines still show. */
+export function cellBorderCSS(style, { above, below, left, right } = {}) {
+  const resolved = {
+    borderTop: declaredEdge(style, 'top') ?? declaredEdge(above, 'bottom'),
+    borderRight: declaredEdge(right, 'left') ?? declaredEdge(style, 'right'),
+    borderBottom: declaredEdge(below, 'top') ?? declaredEdge(style, 'bottom'),
+    borderLeft: declaredEdge(style, 'left') ?? declaredEdge(left, 'right'),
+  }
+  return Object.fromEntries(Object.entries(resolved).filter(([, value]) => value))
 }
 
 export function findSheet(workbook, sheetId) {

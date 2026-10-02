@@ -10,6 +10,8 @@ import {
   appendColumn,
   applyCellsFormat,
   cellCSS,
+  cellBorderCSS,
+  borderColorOf,
   cellMetadata,
   clearCellsFormat,
   coordinateFor,
@@ -276,6 +278,10 @@ function App() {
       } else if (key === 'u') {
         event.preventDefault()
         toggleFont('underline')
+      } else if (key === 'a' && !/^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName)) {
+        // Cmd/Ctrl+A would otherwise select the whole painted DOM, not the sheet's cells.
+        event.preventDefault()
+        selectAll()
       } else if (key === 's') {
         // Saves in place instead of letting the browser try to "Save page as…".
         event.preventDefault()
@@ -344,6 +350,22 @@ function App() {
       setSelectedColumns(new Set([columnIndex]))
       setSelectedRows(new Set())
     }
+    setContextMenu(null)
+  }
+  function styleAt(row, column) {
+    if (row < 0 || column < 0 || row >= sheet.records.length || column >= sheet.columns.length) return undefined
+    return styleFor(cellMetadata(sheet, coordinateFor(column, row))?.style)
+  }
+  function neighborStyles(row, column) {
+    return { above: styleAt(row - 1, column), below: styleAt(row + 1, column), left: styleAt(row, column - 1), right: styleAt(row, column + 1) }
+  }
+  function selectAll() {
+    const coordinates = []
+    sheet.records.forEach((_, rowIndex) => sheet.columns.forEach((__, columnIndex) => coordinates.push(coordinateFor(columnIndex, rowIndex))))
+    setSelectedCell({ row: 0, column: 0 })
+    setSelectedCells(new Set(coordinates))
+    setSelectedColumns(new Set())
+    setSelectedRows(new Set())
     setContextMenu(null)
   }
   function selectRow(rowIndex, additive) {
@@ -468,7 +490,7 @@ function App() {
     cellRefs.current.get(selectedCoordinate)?.focus()
   }
   function setBorderColor(color) {
-    setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { border: { color } }))
+    setWorkbook(applyCellsFormat(workbook, sheet.id, selectedCells, { border: { top: { style: 'thin', color }, right: { style: 'thin', color }, bottom: { style: 'thin', color }, left: { style: 'thin', color } } }))
     cellRefs.current.get(selectedCoordinate)?.focus()
   }
   function clearFormatting() {
@@ -764,8 +786,8 @@ function App() {
               <input type="color" value={selectedStyle.fill?.color || '#ffffff'} onChange={(e) => setFillColor(e.target.value)} aria-label="Fill color" />
             </label>
             <label className="format-button color-swatch" title="Border color">
-              <span aria-hidden="true" className="color-swatch-border" style={{ borderColor: selectedStyle.border?.color || 'var(--border-strong)' }} />
-              <input type="color" value={selectedStyle.border?.color || '#000000'} onChange={(e) => setBorderColor(e.target.value)} aria-label="Border color" />
+              <span aria-hidden="true" className="color-swatch-border" style={{ borderColor: borderColorOf(selectedStyle) || 'var(--border-strong)' }} />
+              <input type="color" value={(borderColorOf(selectedStyle) || '#000000').toLowerCase()} onChange={(e) => setBorderColor(e.target.value)} aria-label="Border color" />
             </label>
             <button type="button" className={`format-button ${allSelectedAreCurrency ? 'is-active' : ''}`} aria-pressed={allSelectedAreCurrency} onMouseDown={(e) => e.preventDefault()} onClick={toggleCurrency} aria-label="Currency (USD)" title="Format as currency (USD)">$</button>
             <button type="button" className="format-button format-clear" onMouseDown={(e) => e.preventDefault()} onClick={clearFormatting} aria-label="Clear formatting" title="Clear formatting">Clear</button>
@@ -788,9 +810,11 @@ function App() {
               </colgroup>
               <thead>
                 <tr>
-                  <th scope="col" className="corner-cell" aria-label="Spreadsheet corner" />
+                  <th scope="col" className="corner-cell">
+                    <button type="button" className="corner-button" onClick={selectAll} aria-label="Select all cells" title="Select all" />
+                  </th>
                   {sheet.columns.map((column, index) => (
-                    <th scope="col" key={column.id || index} onContextMenu={(e) => openColumnContextMenu(e, index)}>
+                    <th scope="col" key={column.id || index} style={cellBorderCSS(styleAt(0, index), {}).borderTop ? { borderBottom: cellBorderCSS(styleAt(0, index), {}).borderTop } : undefined} onContextMenu={(e) => openColumnContextMenu(e, index)}>
                       <button
                         type="button"
                         className={`column-header-button ${selectedColumns.has(index) ? 'is-active' : ''}`}
@@ -818,7 +842,7 @@ function App() {
                   const rowIndex = startRow + offset
                   return (
                   <tr key={rowIndex}>
-                    <th scope="row" onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
+                    <th scope="row" style={cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft ? { borderRight: cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft } : undefined} onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
                       <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowIndex + 1}`}>
                         {rowIndex + 1}
                       </button>
@@ -837,7 +861,7 @@ function App() {
                       const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType, style.numberFormat)
                       const displayValue = formatValue(cellValue, style.numberFormat)
                       return (
-                        <td key={coordinate}>
+                        <td key={coordinate} style={cellBorderCSS(style, neighborStyles(rowIndex, columnIndex))}>
                           {isEditing ? (
                             <input
                               ref={editorRef}
