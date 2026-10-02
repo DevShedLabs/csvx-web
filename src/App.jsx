@@ -151,6 +151,9 @@ function App() {
   const colRefs = useRef(new Map())
   const contextMenuRef = useRef(null)
   const tableScrollRef = useRef(null)
+  const dragRef = useRef(null)
+  const suppressClickRef = useRef(false)
+  const applyRangeRef = useRef(null)
   const [printOpen, setPrintOpen] = useState(false)
   const sheetNameInputRef = useRef(null)
 
@@ -282,6 +285,86 @@ function App() {
       if (resetTimer) clearTimeout(resetTimer)
     }
   }, [])
+  // Drag-select: while the button is down, find the cell under the pointer (clamped to the grid, so
+  // dragging past an edge keeps extending) and auto-scroll near the edges — only the rows near the
+  // viewport are mounted, so scrolling is what brings further cells into reach.
+  useEffect(() => {
+    const ROW_HEADER_WIDTH = 48
+    const COLUMN_HEADER_HEIGHT = 36
+    const EDGE = 28
+    let pointer = null
+    let timer = null
+    const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high))
+    function update() {
+      const drag = dragRef.current
+      const scroller = tableScrollRef.current
+      if (!drag || !scroller || !pointer) return
+      // Use the client area, not the outer rect: scrollbars sit inside the outer rect and aren't cells.
+      const rect = scroller.getBoundingClientRect()
+      const right = rect.left + scroller.clientWidth
+      const bottom = rect.top + scroller.clientHeight
+      const x = clamp(pointer.x, rect.left + ROW_HEADER_WIDTH + 2, right - 2)
+      const y = clamp(pointer.y, rect.top + COLUMN_HEADER_HEIGHT + 2, bottom - 2)
+      // The clamped point can land on a scrollbar or gutter rather than a cell, so step toward the
+      // middle of the grid until a cell is found.
+      const centerX = (rect.left + ROW_HEADER_WIDTH + right) / 2
+      const centerY = (rect.top + COLUMN_HEADER_HEIGHT + bottom) / 2
+      let cell = null
+      for (let step = 0; step <= 8 && !cell; step += 1) {
+        const px = x + Math.sign(centerX - x) * Math.min(Math.abs(centerX - x), step * 8)
+        const py = y + Math.sign(centerY - y) * Math.min(Math.abs(centerY - y), step * 8)
+        cell = document.elementFromPoint(px, py)?.closest('td[data-row]')
+      }
+      if (!cell) return
+      const focus = { row: Number(cell.dataset.row), column: Number(cell.dataset.col) }
+      const key = `${focus.row},${focus.column}`
+      if (key === drag.last) return
+      drag.last = key
+      if (focus.row !== drag.anchor.row || focus.column !== drag.anchor.column) suppressClickRef.current = true
+      applyRangeRef.current(drag.kind, drag.anchor, focus)
+    }
+    function scrollStep() {
+      const scroller = tableScrollRef.current
+      if (!dragRef.current || !scroller || !pointer) return
+      const rect = scroller.getBoundingClientRect()
+      const right = rect.left + scroller.clientWidth
+      const bottom = rect.top + scroller.clientHeight
+      const speed = (distance) => Math.round(Math.min(40, 4 + Math.abs(distance) / 2)) * Math.sign(distance)
+      const top = rect.top + COLUMN_HEADER_HEIGHT
+      const left = rect.left + ROW_HEADER_WIDTH
+      let dy = 0
+      let dx = 0
+      if (pointer.y > bottom - EDGE) dy = speed(pointer.y - (bottom - EDGE))
+      else if (pointer.y < top + EDGE) dy = speed(pointer.y - (top + EDGE))
+      if (pointer.x > right - EDGE) dx = speed(pointer.x - (right - EDGE))
+      else if (pointer.x < left + EDGE) dx = speed(pointer.x - (left + EDGE))
+      if (dx || dy) {
+        scroller.scrollBy(dx, dy)
+        setScrollTop(scroller.scrollTop)
+        // The newly mounted rows render on the next frame; re-locate the pointer then.
+        requestAnimationFrame(update)
+      }
+    }
+    function onMove(event) {
+      if (!dragRef.current) return
+      pointer = { x: event.clientX, y: event.clientY }
+      if (!timer) timer = setInterval(scrollStep, 30)
+      update()
+    }
+    function onUp() {
+      dragRef.current = null
+      pointer = null
+      if (timer) clearInterval(timer)
+      timer = null
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (timer) clearInterval(timer)
+    }
+  }, [])
   useEffect(() => {
     function handleShortcut(event) {
       if (!(event.metaKey || event.ctrlKey)) return
@@ -347,6 +430,41 @@ function App() {
     setSelectedColumns(new Set())
     setSelectedRows(new Set())
     setContextMenu(null)
+  }
+  // Range selection (click-drag, Shift+click). `kind` says what is being dragged: 'cell' selects the
+  // rectangle between anchor and focus, 'column' / 'row' select whole columns / rows between them
+  // (a column includes the header row). The active cell stays at the anchor, as in Sheets and Excel.
+  function applyRange(kind, anchor, focus) {
+    const lastRow = sheet.records.length - 1
+    const lastColumn = sheet.columns.length - 1
+    let [r0, r1] = [Math.min(anchor.row, focus.row), Math.max(anchor.row, focus.row)]
+    let [c0, c1] = [Math.min(anchor.column, focus.column), Math.max(anchor.column, focus.column)]
+    if (kind === 'column') [r0, r1] = [HEADER_ROW, lastRow]
+    if (kind === 'row') [c0, c1] = [0, lastColumn]
+    const coordinates = new Set()
+    for (let row = r0; row <= r1; row += 1) for (let column = c0; column <= c1; column += 1) coordinates.add(coordinateFor(column, row))
+    const span = (from, to) => new Set(Array.from({ length: to - from + 1 }, (_, offset) => from + offset))
+    setSelectedCell(anchor)
+    setSelectedCells(coordinates)
+    setSelectedColumns(kind === 'column' ? span(c0, c1) : new Set())
+    setSelectedRows(kind === 'row' ? span(r0, r1) : new Set())
+    setContextMenu(null)
+  }
+  applyRangeRef.current = applyRange
+  // Mouse-down starts a drag (and a plain press selects immediately); Shift+press extends from the
+  // active cell instead. Ctrl/Cmd is left to the existing click handlers (additive toggling).
+  function startDrag(kind, target, event) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey) return
+    suppressClickRef.current = false
+    let anchor = target
+    if (event.shiftKey) {
+      anchor = kind === 'column' ? { row: HEADER_ROW, column: selectedCell.column } : kind === 'row' ? { row: selectedCell.row, column: 0 } : selectedCell
+      applyRange(kind, anchor, target)
+      suppressClickRef.current = true
+    } else if (kind === 'cell') selectCell(target.row, target.column)
+    else if (kind === 'column') selectColumn(target.column, false)
+    else selectRow(target.row, false)
+    dragRef.current = { kind, anchor, last: `${target.row},${target.column}` }
   }
   function toggleCellSelection(row, column) {
     const coordinate = coordinateFor(column, row)
@@ -592,44 +710,60 @@ function App() {
   function handleAddColumn() {
     setWorkbook(appendColumn(workbook, sheet.id))
   }
+  // Right-clicking inside the current row/column selection keeps it and the menu acts on all of it;
+  // right-clicking outside selects just that row/column first, as in Sheets and Excel.
   function openRowContextMenu(event, rowIndex) {
     event.preventDefault()
     // Row 1 is the header: it can't be inserted before or deleted, so it has no row menu.
     if (rowIndex < 0) return
-    selectRow(rowIndex, false)
-    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'row', index: rowIndex })
+    const keep = selectedRows.has(rowIndex)
+    if (!keep) selectRow(rowIndex, false)
+    const rows = keep ? [...selectedRows].filter((row) => row >= 0).sort((a, b) => a - b) : [rowIndex]
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'row', index: rowIndex, items: rows })
   }
   function openColumnContextMenu(event, columnIndex) {
     event.preventDefault()
-    selectColumn(columnIndex, false)
-    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'column', index: columnIndex })
+    const keep = selectedColumns.has(columnIndex)
+    if (!keep) selectColumn(columnIndex, false)
+    const columns = keep ? [...selectedColumns].sort((a, b) => a - b) : [columnIndex]
+    setContextMenu({ x: event.clientX, y: event.clientY, kind: 'column', index: columnIndex, items: columns })
   }
-  function handleInsertRow(rowIndex) {
-    setWorkbook(insertRow(workbook, sheet.id, rowIndex))
+  // Inserting N rows at one index N times keeps every formula reference shifting correctly, since
+  // each call goes through the engine-backed insertRow.
+  function handleInsertRows(atIndex, count) {
+    let next = workbook
+    for (let i = 0; i < count; i += 1) next = insertRow(next, sheet.id, atIndex)
+    setWorkbook(next)
     setContextMenu(null)
   }
-  function handleDeleteRow(rowIndex) {
-    if (sheet.records.length <= 1) {
+  function handleDeleteRows(rows) {
+    if (rows.length >= sheet.records.length) {
       setError('A sheet must contain at least one row.')
       setContextMenu(null)
       return
     }
-    setWorkbook(deleteRow(workbook, sheet.id, rowIndex))
-    selectCell(Math.max(0, rowIndex - 1), selectedCell.column)
+    let next = workbook
+    for (const row of [...rows].sort((a, b) => b - a)) next = deleteRow(next, sheet.id, row)
+    setWorkbook(next)
+    selectCell(Math.max(0, Math.min(...rows) - 1), selectedCell.column)
     setContextMenu(null)
   }
-  function handleInsertColumn(columnIndex) {
-    setWorkbook(insertColumn(workbook, sheet.id, columnIndex))
+  function handleInsertColumns(atIndex, count) {
+    let next = workbook
+    for (let i = 0; i < count; i += 1) next = insertColumn(next, sheet.id, atIndex)
+    setWorkbook(next)
     setContextMenu(null)
   }
-  function handleDeleteColumn(columnIndex) {
-    if (sheet.columns.length <= 1) {
+  function handleDeleteColumns(columns) {
+    if (columns.length >= sheet.columns.length) {
       setError('A sheet must contain at least one column.')
       setContextMenu(null)
       return
     }
-    setWorkbook(deleteColumn(workbook, sheet.id, columnIndex))
-    selectCell(selectedCell.row, Math.max(0, columnIndex - 1))
+    let next = workbook
+    for (const column of [...columns].sort((a, b) => b - a)) next = deleteColumn(next, sheet.id, column)
+    setWorkbook(next)
+    selectCell(selectedCell.row, Math.max(0, Math.min(...columns) - 1))
     setContextMenu(null)
   }
 
@@ -844,11 +978,12 @@ function App() {
                     <button type="button" className="corner-button" onClick={selectAll} aria-label="Select all cells" title="Select all" />
                   </th>
                   {sheet.columns.map((column, index) => (
-                    <th scope="col" key={column.id || index} style={cellBorderCSS(styleAt(0, index), {}).borderTop ? { borderBottom: cellBorderCSS(styleAt(0, index), {}).borderTop } : undefined} onContextMenu={(e) => openColumnContextMenu(e, index)}>
+                    <th scope="col" key={column.id || index} data-col={index} style={cellBorderCSS(styleAt(HEADER_ROW, index), {}).borderTop ? { borderBottom: cellBorderCSS(styleAt(HEADER_ROW, index), {}).borderTop } : undefined} onContextMenu={(e) => openColumnContextMenu(e, index)}>
                       <button
                         type="button"
                         className={`column-header-button ${selectedColumns.has(index) ? 'is-active' : ''}`}
-                        onClick={(e) => selectColumn(index, e.metaKey || e.ctrlKey)}
+                        onMouseDown={(e) => startDrag('column', { row: HEADER_ROW, column: index }, e)}
+                        onClick={(e) => { if (!suppressClickRef.current) selectColumn(index, e.metaKey || e.ctrlKey) }}
                         aria-label={`Select column ${column.name || column.id}`}
                         title={column.width ? `Width: ${column.width} (XLSX character-width units)` : undefined}
                       >
@@ -871,8 +1006,8 @@ function App() {
                 {Array.from({ length: endRow - startRow }, (_, offset) => startRow + offset - 1).map((rowIndex) => {
                   return (
                   <tr key={rowIndex}>
-                    <th scope="row" style={cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft ? { borderRight: cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft } : undefined} onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
-                      <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowNumberFor(rowIndex)}`}>
+                    <th scope="row" data-row={rowIndex} style={cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft ? { borderRight: cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft } : undefined} onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
+                      <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onMouseDown={(e) => startDrag('row', { row: rowIndex, column: 0 }, e)} onClick={(e) => { if (!suppressClickRef.current) selectRow(rowIndex, e.metaKey || e.ctrlKey) }} aria-label={`Select row ${rowNumberFor(rowIndex)}`}>
                         {rowNumberFor(rowIndex)}
                       </button>
                     </th>
@@ -890,7 +1025,7 @@ function App() {
                       const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType, style.numberFormat)
                       const displayValue = formatValue(cellValue, style.numberFormat)
                       return (
-                        <td key={coordinate} style={cellBorderCSS(style, neighborStyles(rowIndex, columnIndex))}>
+                        <td key={coordinate} data-row={rowIndex} data-col={columnIndex} style={cellBorderCSS(style, neighborStyles(rowIndex, columnIndex))}>
                           {isEditing ? (
                             <input
                               ref={editorRef}
@@ -930,7 +1065,11 @@ function App() {
                               ref={(el) => { if (el) cellRefs.current.set(coordinate, el); else cellRefs.current.delete(coordinate) }}
                               className={`cell-button ${selectedCoordinate === coordinate ? 'is-selected' : ''} ${selectedCoordinate !== coordinate && selectedCells.has(coordinate) ? 'is-in-selection' : ''}`}
                               style={cellCSS(style)}
-                              onClick={(e) => (e.metaKey || e.ctrlKey ? toggleCellSelection(rowIndex, columnIndex) : selectCell(rowIndex, columnIndex))}
+                              onMouseDown={(e) => startDrag('cell', { row: rowIndex, column: columnIndex }, e)}
+                              onClick={(e) => {
+                                if (e.metaKey || e.ctrlKey) toggleCellSelection(rowIndex, columnIndex)
+                                else if (!suppressClickRef.current) selectCell(rowIndex, columnIndex)
+                              }}
                               onKeyDown={(e) => handleCellKeyDown(e, rowIndex, columnIndex)}
                               aria-label={`${coordinate}, value ${value || 'blank'}`}
                             >
@@ -1018,22 +1157,31 @@ function App() {
           <button type="button" role="menuitem" className="danger-action" onClick={() => removeSheet(contextMenu.index)}>Delete sheet</button>
         </div>
       )}
-      {contextMenu && contextMenu.kind === 'row' && (
-        <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-          <p className="context-menu-label">Row {rowNumberFor(contextMenu.index)}</p>
-          <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index)}>Insert row before</button>
-          <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index + 1)}>Insert row after</button>
-          <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteRow(contextMenu.index)}>Delete row</button>
-        </div>
-      )}
-      {contextMenu && contextMenu.kind === 'column' && (
-        <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-          <p className="context-menu-label">Column {sheet.columns[contextMenu.index]?.name || sheet.columns[contextMenu.index]?.id}</p>
-          <button type="button" role="menuitem" onClick={() => handleInsertColumn(contextMenu.index)}>Insert column before</button>
-          <button type="button" role="menuitem" onClick={() => handleInsertColumn(contextMenu.index + 1)}>Insert column after</button>
-          <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteColumn(contextMenu.index)}>Delete column</button>
-        </div>
-      )}
+      {contextMenu && contextMenu.kind === 'row' && (() => {
+        const rows = contextMenu.items
+        const plural = rows.length > 1
+        return (
+          <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+            <p className="context-menu-label">{plural ? `Rows ${rowNumberFor(rows[0])}–${rowNumberFor(rows[rows.length - 1])}` : `Row ${rowNumberFor(rows[0])}`}</p>
+            <button type="button" role="menuitem" onClick={() => handleInsertRows(rows[0], rows.length)}>Insert {plural ? `${rows.length} rows` : 'row'} before</button>
+            <button type="button" role="menuitem" onClick={() => handleInsertRows(rows[rows.length - 1] + 1, rows.length)}>Insert {plural ? `${rows.length} rows` : 'row'} after</button>
+            <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteRows(rows)}>Delete {plural ? `${rows.length} rows` : 'row'}</button>
+          </div>
+        )
+      })()}
+      {contextMenu && contextMenu.kind === 'column' && (() => {
+        const columns = contextMenu.items
+        const plural = columns.length > 1
+        const label = (index) => columnId(index)
+        return (
+          <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
+            <p className="context-menu-label">{plural ? `Columns ${label(columns[0])}–${label(columns[columns.length - 1])}` : `Column ${label(columns[0])}`}</p>
+            <button type="button" role="menuitem" onClick={() => handleInsertColumns(columns[0], columns.length)}>Insert {plural ? `${columns.length} columns` : 'column'} before</button>
+            <button type="button" role="menuitem" onClick={() => handleInsertColumns(columns[columns.length - 1] + 1, columns.length)}>Insert {plural ? `${columns.length} columns` : 'column'} after</button>
+            <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteColumns(columns)}>Delete {plural ? `${columns.length} columns` : 'column'}</button>
+          </div>
+        )
+      })()}
     </div>
   )
 }
