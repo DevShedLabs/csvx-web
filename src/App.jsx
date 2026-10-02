@@ -20,13 +20,13 @@ import {
   HEADER_ROW,
   clearCellsFormat,
   coordinateFor,
-  deleteColumn,
-  deleteRow,
+  deleteColumns,
+  deleteRows,
   deleteSheet,
   findSheet,
   indicesForCoordinate,
-  insertColumn,
-  insertRow,
+  insertColumns,
+  insertRows,
   recalculateWorkbook,
   renameSheet,
   setCellValue,
@@ -728,12 +728,9 @@ function App() {
     const columns = keep ? [...selectedColumns].sort((a, b) => a - b) : [columnIndex]
     setContextMenu({ x: event.clientX, y: event.clientY, kind: 'column', index: columnIndex, items: columns })
   }
-  // Inserting N rows at one index N times keeps every formula reference shifting correctly, since
-  // each call goes through the engine-backed insertRow.
+  // Batch operations: one pass and one recalculation however many rows or columns are involved.
   function handleInsertRows(atIndex, count) {
-    let next = workbook
-    for (let i = 0; i < count; i += 1) next = insertRow(next, sheet.id, atIndex)
-    setWorkbook(next)
+    setWorkbook(insertRows(workbook, sheet.id, atIndex, count))
     setContextMenu(null)
   }
   function handleDeleteRows(rows) {
@@ -742,16 +739,12 @@ function App() {
       setContextMenu(null)
       return
     }
-    let next = workbook
-    for (const row of [...rows].sort((a, b) => b - a)) next = deleteRow(next, sheet.id, row)
-    setWorkbook(next)
+    setWorkbook(deleteRows(workbook, sheet.id, rows))
     selectCell(Math.max(0, Math.min(...rows) - 1), selectedCell.column)
     setContextMenu(null)
   }
   function handleInsertColumns(atIndex, count) {
-    let next = workbook
-    for (let i = 0; i < count; i += 1) next = insertColumn(next, sheet.id, atIndex)
-    setWorkbook(next)
+    setWorkbook(insertColumns(workbook, sheet.id, atIndex, count))
     setContextMenu(null)
   }
   function handleDeleteColumns(columns) {
@@ -760,9 +753,7 @@ function App() {
       setContextMenu(null)
       return
     }
-    let next = workbook
-    for (const column of [...columns].sort((a, b) => b - a)) next = deleteColumn(next, sheet.id, column)
-    setWorkbook(next)
+    setWorkbook(deleteColumns(workbook, sheet.id, columns))
     selectCell(selectedCell.row, Math.max(0, Math.min(...columns) - 1))
     setContextMenu(null)
   }

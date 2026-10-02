@@ -352,34 +352,59 @@ function referencedSheetName(sheetPrefix, targetSheetName) {
   return sheetPrefix.slice(0, -1).replace(/^'|'$/g, '').replace(/''/g, "'")
 }
 
-function rewriteFormulaRows(formula, targetSheetName, insertionRow, delta, deleting) {
+/** Maps a zero-based index through a batch insert or delete: returns its new index, or null if it
+ * was deleted. Insert: everything at or after `at` moves down by `count`. Delete: an index moves up
+ * by the number of deleted indices before it (binary search over the sorted deletions). */
+function insertMapper(at, count) {
+  return (index) => (index >= at ? index + count : index)
+}
+
+function deleteMapper(indices) {
+  const sorted = [...new Set(indices)].sort((a, b) => a - b)
+  const deleted = new Set(sorted)
+  return (index) => {
+    if (deleted.has(index)) return null
+    let low = 0
+    let high = sorted.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (sorted[middle] < index) low = middle + 1
+      else high = middle
+    }
+    return index - low
+  }
+}
+
+function rewriteFormulaRows(formula, targetSheetName, mapRow) {
   if (!formula) return formula
   return formula.replace(CELL_REFERENCE_PATTERN, (match, sheetPrefix, colAnchor, column, rowAnchor, rowText) => {
     if (referencedSheetName(sheetPrefix, targetSheetName) !== targetSheetName) return match
     const row = rowIndexFor(Number(rowText))
-    if (deleting && row === insertionRow) return '#REF!'
-    if (row < insertionRow) return match
-    return `${sheetPrefix || ''}${colAnchor}${column}${rowAnchor}${rowNumberFor(row + delta)}`
+    const next = row < 0 ? row : mapRow(row)
+    if (next === null) return '#REF!'
+    if (next === row) return match
+    return `${sheetPrefix || ''}${colAnchor}${column}${rowAnchor}${rowNumberFor(next)}`
   })
 }
 
-function rewriteFormulaColumns(formula, targetSheetName, insertionColumn, delta, deleting) {
+function rewriteFormulaColumns(formula, targetSheetName, mapColumn) {
   if (!formula) return formula
   return formula.replace(CELL_REFERENCE_PATTERN, (match, sheetPrefix, colAnchor, column, rowAnchor, rowText) => {
     if (referencedSheetName(sheetPrefix, targetSheetName) !== targetSheetName) return match
     const columnIndex = columnIndexFromId(column)
-    if (deleting && columnIndex === insertionColumn) return '#REF!'
-    if (columnIndex < insertionColumn) return match
-    return `${sheetPrefix || ''}${colAnchor}${columnId(columnIndex + delta)}${rowAnchor}${rowText}`
+    const next = mapColumn(columnIndex)
+    if (next === null) return '#REF!'
+    if (next === columnIndex) return match
+    return `${sheetPrefix || ''}${colAnchor}${columnId(next)}${rowAnchor}${rowText}`
   })
 }
 
-/** Shared by insertRow/deleteRow: rewrites every formula in the workbook (any sheet can reference
- * the target sheet by name) and, for the target sheet only, both shifts cell metadata to follow
- * its row and splices `records`. A formula whose own row moves still gets its references rewritten
- * — unlike a hand-rolled version of this that existed before the csvx-ts rewrite, which skipped
- * rewriting a formula sitting on a row that itself shifted, silently leaving stale references. */
-function shiftSheetRows(workbook, sheetId, insertionRow, delta, deleting) {
+/** Shared by the row insert/delete functions: rewrites every formula in the workbook (any sheet can
+ * reference the target sheet by name) and, for the target sheet only, moves cell metadata and
+ * `rowHeights` (keyed by row number, spec/03-sheets.md) to follow their rows, then reshapes
+ * `records`. One pass for any number of rows — a formula whose own row moves still gets its
+ * references rewritten. */
+function shiftSheetRows(workbook, sheetId, mapRow, reshapeRecords) {
   const targetSheet = findSheet(workbook, sheetId)
   return {
     ...workbook,
@@ -387,25 +412,29 @@ function shiftSheetRows(workbook, sheetId, insertionRow, delta, deleting) {
       const nextCells = {}
       Object.entries(sheetItem.cells || {}).forEach(([coordinate, metadata]) => {
         const rewritten = metadata.formula
-          ? { ...metadata, formula: rewriteFormulaRows(metadata.formula, targetSheet.name, insertionRow, delta, deleting) }
+          ? { ...metadata, formula: rewriteFormulaRows(metadata.formula, targetSheet.name, mapRow) }
           : metadata
         if (sheetItem.id !== sheetId) {
           nextCells[coordinate] = rewritten
           return
         }
         const { row, column } = indicesForCoordinate(coordinate)
-        if (row < insertionRow) {
-          nextCells[coordinate] = rewritten
-          return
-        }
-        if (deleting && row === insertionRow) return
-        nextCells[coordinateFor(column, row + delta)] = rewritten
+        const next = row < 0 ? row : mapRow(row)
+        if (next === null) return
+        nextCells[next === row ? coordinate : coordinateFor(column, next)] = rewritten
       })
       if (sheetItem.id !== sheetId) return { ...sheetItem, cells: nextCells }
-      const records = [...sheetItem.records]
-      if (deleting) records.splice(insertionRow, 1)
-      else records.splice(insertionRow, 0, Array(sheetItem.columns.length).fill(''))
-      return { ...sheetItem, records, cells: nextCells }
+      let rowHeights = sheetItem.rowHeights
+      if (rowHeights) {
+        rowHeights = {}
+        Object.entries(sheetItem.rowHeights).forEach(([rowNumber, height]) => {
+          const row = rowIndexFor(Number(rowNumber))
+          const next = row < 0 ? row : mapRow(row)
+          if (next !== null) rowHeights[rowNumberFor(next)] = height
+        })
+      }
+      const records = reshapeRecords(sheetItem.records, sheetItem.columns.length)
+      return { ...sheetItem, records, cells: nextCells, ...(rowHeights ? { rowHeights } : {}) }
     }),
   }
 }
@@ -414,7 +443,7 @@ function shiftSheetRows(workbook, sheetId, insertionRow, delta, deleting) {
  * new index, matching the convention columnId(index) already establishes elsewhere (buildSheetFromCSV
  * in csvx-ts, appendColumn above) — without this, a column's id would silently point at the wrong
  * letter after a mid-sheet insert/delete. */
-function shiftSheetColumns(workbook, sheetId, insertionColumn, delta, deleting) {
+function shiftSheetColumns(workbook, sheetId, mapColumn, reshapeColumns, reshapeRow) {
   const targetSheet = findSheet(workbook, sheetId)
   return {
     ...workbook,
@@ -422,57 +451,57 @@ function shiftSheetColumns(workbook, sheetId, insertionColumn, delta, deleting) 
       const nextCells = {}
       Object.entries(sheetItem.cells || {}).forEach(([coordinate, metadata]) => {
         const rewritten = metadata.formula
-          ? { ...metadata, formula: rewriteFormulaColumns(metadata.formula, targetSheet.name, insertionColumn, delta, deleting) }
+          ? { ...metadata, formula: rewriteFormulaColumns(metadata.formula, targetSheet.name, mapColumn) }
           : metadata
         if (sheetItem.id !== sheetId) {
           nextCells[coordinate] = rewritten
           return
         }
         const { row, column } = indicesForCoordinate(coordinate)
-        if (column < insertionColumn) {
-          nextCells[coordinate] = rewritten
-          return
-        }
-        if (deleting && column === insertionColumn) return
-        nextCells[coordinateFor(column + delta, row)] = rewritten
+        const next = mapColumn(column)
+        if (next === null) return
+        nextCells[next === column ? coordinate : coordinateFor(next, row)] = rewritten
       })
       if (sheetItem.id !== sheetId) return { ...sheetItem, cells: nextCells }
-      let columns = sheetItem.columns
-      let records = sheetItem.records
-      if (deleting) {
-        columns = columns.filter((_, index) => index !== insertionColumn)
-        records = records.map((row) => row.filter((_, index) => index !== insertionColumn))
-      } else {
-        columns = [...columns]
-        const id = columnId(insertionColumn)
-        columns.splice(insertionColumn, 0, { id, name: id })
-        records = records.map((row) => {
-          const next = [...row]
-          next.splice(insertionColumn, 0, '')
-          return next
-        })
-      }
-      columns = syncSyntheticColumnNames(columns)
-      return { ...sheetItem, columns, records, cells: nextCells }
+      const columns = syncSyntheticColumnNames(reshapeColumns(sheetItem.columns))
+      return { ...sheetItem, columns, records: sheetItem.records.map(reshapeRow), cells: nextCells }
     }),
   }
 }
 
 // Reference text is already rewritten by shiftSheetRows/shiftSheetColumns above; recalculateWorkbook
-// (re-run here) is what turns those rewritten formulas into updated cached values and visible text.
+// (run once at the end, however many rows or columns changed) is what turns those rewritten formulas
+// into updated cached values and visible text.
 
-export function insertRow(workbook, sheetId, rowIndex) {
-  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, rowIndex, 1, false))
+/** Inserts `count` blank rows before record index `at`. */
+export function insertRows(workbook, sheetId, at, count = 1) {
+  const blank = (columns) => Array(columns).fill('')
+  const reshape = (records, columns) => [...records.slice(0, at), ...Array.from({ length: count }, () => blank(columns)), ...records.slice(at)]
+  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, insertMapper(at, count), reshape))
 }
 
-export function deleteRow(workbook, sheetId, rowIndex) {
-  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, rowIndex, -1, true))
+/** Deletes the records at the given indices (any order, duplicates ignored) in one pass. */
+export function deleteRows(workbook, sheetId, indices) {
+  const doomed = new Set(indices)
+  const reshape = (records) => records.filter((_, index) => !doomed.has(index))
+  return recalculateWorkbook(shiftSheetRows(workbook, sheetId, deleteMapper(indices), reshape))
 }
 
-export function insertColumn(workbook, sheetId, columnIndex) {
-  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, columnIndex, 1, false))
+/** Inserts `count` blank columns before column index `at`. */
+export function insertColumns(workbook, sheetId, at, count = 1) {
+  const reshapeColumns = (columns) => [...columns.slice(0, at), ...Array.from({ length: count }, (_, offset) => ({ id: columnId(at + offset), name: columnId(at + offset) })), ...columns.slice(at)]
+  const reshapeRow = (row) => [...row.slice(0, at), ...Array(count).fill(''), ...row.slice(at)]
+  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, insertMapper(at, count), reshapeColumns, reshapeRow))
 }
 
-export function deleteColumn(workbook, sheetId, columnIndex) {
-  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, columnIndex, -1, true))
+/** Deletes the columns at the given indices (any order, duplicates ignored) in one pass. */
+export function deleteColumns(workbook, sheetId, indices) {
+  const doomed = new Set(indices)
+  const keep = (_, index) => !doomed.has(index)
+  return recalculateWorkbook(shiftSheetColumns(workbook, sheetId, deleteMapper(indices), (columns) => columns.filter(keep), (row) => row.filter(keep)))
 }
+
+export const insertRow = (workbook, sheetId, rowIndex) => insertRows(workbook, sheetId, rowIndex, 1)
+export const deleteRow = (workbook, sheetId, rowIndex) => deleteRows(workbook, sheetId, [rowIndex])
+export const insertColumn = (workbook, sheetId, columnIndex) => insertColumns(workbook, sheetId, columnIndex, 1)
+export const deleteColumn = (workbook, sheetId, columnIndex) => deleteColumns(workbook, sheetId, [columnIndex])
