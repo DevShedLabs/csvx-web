@@ -52,7 +52,10 @@ function PatternField({ label, value, placeholder, parse, onCommit }) {
   )
 }
 
-export default function PrintView({ sheet, styles, print, columnWidthPx, styleAt, displayAt, onChange, onClose }) {
+export default function PrintView({ sheet, styles, print, columnWidthPx, styleAt: styleAtRecord, displayAt: displayAtRecord, onChange, onClose }) {
+  // Print works in sheet rows (0 = the header, spec row 1); the app addresses cells by record index.
+  const styleAt = (row, column) => styleAtRecord(row - 1, column)
+  const displayAt = (row, column) => displayAtRecord(row - 1, column)
   const layout = useMemo(
     () => paginate({ sheet, styles, print, columnWidthPx: (index) => columnWidthPx(sheet.columns[index]), rowHeightPx: rowHeightPxFor(sheet) }),
     [sheet, styles, print, columnWidthPx],

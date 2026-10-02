@@ -42,4 +42,9 @@ See `../csvx-spec/AGENTS.md` for full detail and the reasoning behind these rule
   Every print setting is read from and written to the sheet's `print` object so it round-trips; never
   keep a print setting as UI-only state. The used-range rule (`usedRange` in `src/model.js`) is also
   from the spec.
-
+- Row 1 is the CSV header, everywhere (`../csvx-spec/spec/03-sheets.md`). The convention — header is
+  `HEADER_ROW` (-1), record i is row i + 2 — is owned by `csvx-ts` (`coordinateFor`,
+  `indicesForCoordinate`, `rowNumberFor`, `rowIndexFor`, `rawCellText`), as is workbook recalculation
+  (`recalculateWorkbook`). Never write a literal `+ 1`/`+ 2` row offset here; call those helpers.
+  The grid renders the header as its first row (editing it renames the column), and
+  `public/example.csvx` must be regenerated with `csvx import` whenever the importer's mapping changes.

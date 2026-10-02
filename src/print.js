@@ -105,7 +105,7 @@ export function paginate({ sheet, styles, print, columnWidthPx, rowHeightPx }) {
   const used = usedRange(sheet, styles)
   const declared = parseRange(settings.area)
   const area = declared
-    ? { r0: declared.r0, r1: Math.min(declared.r1, sheet.records.length - 1), c0: declared.c0, c1: Math.min(declared.c1, sheet.columns.length - 1) }
+    ? { r0: declared.r0, r1: Math.min(declared.r1, sheet.records.length), c0: declared.c0, c1: Math.min(declared.c1, sheet.columns.length - 1) }
     : { r0: 0, r1: used.rows - 1, c0: 0, c1: used.columns - 1 }
   const rowIndices = span(area.r0, area.r1)
   const columnIndices = span(area.c0, area.c1)

@@ -18,18 +18,11 @@
 // resize converts through csvx-ts's pixelsToColumnWidth (see setColumnWidth below) rather than
 // writing a raw pixel number into this field, which would corrupt it for any other reader.
 
-import { columnId, columnIndexFromId, nextCellMetadata, pixelsToColumnWidth, recalculateCells, resolveCellValue } from 'csvx-ts/browser'
+import { HEADER_ROW, canonicalCellText, columnId, columnIndexFromId, coordinateFor, indicesForCoordinate, nextCellMetadata, pixelsToColumnWidth, rawCellText, recalculateWorkbook, resolveCellValue, rowIndexFor, rowNumberFor } from 'csvx-ts/browser'
 
-export function coordinateFor(columnIndex, rowIndex) {
-  return `${columnId(columnIndex)}${rowIndex + 1}`
-}
-
-/** Parses "AB12" into zero-based {column, row} indices — the inverse of coordinateFor. */
-export function indicesForCoordinate(coordinate) {
-  const match = /^([A-Z]+)(\d+)$/.exec(coordinate)
-  if (!match) return { column: 0, row: 0 }
-  return { column: columnIndexFromId(match[1]), row: Number(match[2]) - 1 }
-}
+// The row convention (header = row 1, record i = row i + 2) and workbook recalculation are engine
+// logic, owned by csvx-ts; they are re-exported here only so the rest of the app has one import site.
+export { HEADER_ROW, coordinateFor, indicesForCoordinate, rawCellText, recalculateWorkbook }
 
 /** The "used range" (like Excel's default print area): row and column counts up to the last cell
  * that prints something — a value, a formula, or a visible fill or border. Formatting that draws
@@ -39,17 +32,17 @@ export function usedRange(sheet, styles) {
   const byId = new Map((styles || []).map((style) => [style.id, style]))
   let rows = 1
   let columns = 1
-  ;(sheet?.records || []).forEach((record, rowIndex) => {
+  for (let rowIndex = HEADER_ROW; rowIndex < (sheet?.records?.length || 0); rowIndex += 1) {
     ;(sheet.columns || []).forEach((_, columnIndex) => {
       const metadata = sheet.cells?.[coordinateFor(columnIndex, rowIndex)]
       const style = metadata?.style ? byId.get(metadata.style) : undefined
       const drawsSomething = metadata?.formula || style?.fill?.color || ['top', 'right', 'bottom', 'left'].some((edge) => declaredEdge(style, edge))
-      if (record[columnIndex] || drawsSomething) {
-        rows = Math.max(rows, rowIndex + 1)
+      if (rawCellText(sheet, rowIndex, columnIndex) || drawsSomething) {
+        rows = Math.max(rows, rowNumberFor(rowIndex))
         columns = Math.max(columns, columnIndex + 1)
       }
     })
-  })
+  }
   return { rows, columns }
 }
 
@@ -145,6 +138,7 @@ export function findSheet(workbook, sheetId) {
  * get a second opinion about what a stale `type` or `formula` means once the content it described
  * is gone. */
 export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
+  if (rowIndex < 0) return setHeaderName(workbook, sheetId, columnIndex, value)
   const isFormula = typeof value === 'string' && value.startsWith('=')
   const next = {
     ...workbook,
@@ -178,69 +172,25 @@ export function setCellValue(workbook, sheetId, rowIndex, columnIndex, value) {
   return recalculateWorkbook(next)
 }
 
-/** Converts a formula result back to the raw text the sheet CSV stores — spec/03-sheets.md: the
- * CSV holds the cache, not a formatted-for-display string (that's formatValue's job, applied only
- * at render time). */
-function canonicalCellText(value) {
-  if (!value || value.type === 'blank') return ''
-  if (value.type === 'error') return `#${value.code}`
-  if (value.type === 'boolean') return value.value ? 'TRUE' : 'FALSE'
-  return String(value.value ?? '')
-}
-
-/** Builds the flat coordinate->{formula|value} map csvx-ts's recalculateCells expects for one
- * sheet. Every CSV cell needs an entry (not just formula cells) so a formula can resolve a plain
- * cell it references; resolveCellValue (csvx-ts) is what decides a plain cell's type, per its own
- * declared type, its column's, or (failing those) its style's numberFormat — this is the one place
- * that decision is allowed to happen (csvx-spec/AGENTS.md rule 1), never a heuristic guess made
- * here. `styles` is passed through only to resolve a cell's numberFormat by id — never interpreted
- * here. */
-function buildCellMap(sheet, styles) {
-  const cells = {}
-  sheet.records.forEach((row, rowIndex) => {
-    row.forEach((raw, columnIndex) => {
-      const coordinate = coordinateFor(columnIndex, rowIndex)
-      const metadata = sheet.cells?.[coordinate]
-      if (metadata?.formula) {
-        cells[coordinate] = { formula: metadata.formula }
-        return
-      }
-      const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
-      const numberFormat = styleForId(styles, metadata?.style).numberFormat
-      cells[coordinate] = { value: resolveCellValue(raw, declaredType, numberFormat) }
-    })
-  })
-  return cells
-}
-
-/** Recalculates every formula cell in every sheet via csvx-ts's recalculateCells — orchestration
- * only (gathering inputs, writing results back), never the evaluation itself. Cross-sheet
- * references are resolved against each other sheet's own (already-typed) cell map by name; a
- * formula's own sheet never needs its own result fed back through resolveSheet, since recalculateCells
- * already resolves same-sheet references directly. Call this after anything that can change what a
- * formula sees: a cell edit, a row/column insert or delete, or once on workbook load (covers a
- * formula authored by another tool with a stale or missing cache). */
-export function recalculateWorkbook(workbook) {
-  const cellMapsByName = {}
-  workbook.sheets.forEach((sheet) => {
-    cellMapsByName[sheet.name] = buildCellMap(sheet, workbook.styles)
-  })
-  const sheets = workbook.sheets.map((sheet) => {
-    const results = recalculateCells(cellMapsByName[sheet.name], {
-      resolveSheet: (name) => cellMapsByName[name],
-    })
-    if (Object.keys(results).length === 0) return sheet
-    const records = sheet.records.map((row) => [...row])
-    const cells = { ...sheet.cells }
-    for (const [coordinate, value] of Object.entries(results)) {
-      const { row, column } = indicesForCoordinate(coordinate)
-      if (!records[row]) continue
-      records[row][column] = canonicalCellText(value)
-      cells[coordinate] = { ...cells[coordinate], cached: value }
-    }
-    return { ...sheet, records, cells }
-  })
-  return { ...workbook, sheets }
+/** Editing row 1 renames the column: the header cell's text is Column.name (spec/03-sheets.md). An
+ * empty value restores the column's own letter, since a CSV header cell can't be empty. Style
+ * metadata on the header cell is untouched; a stale formula or cache on it is dropped by the engine
+ * (nextCellMetadata) like any literal edit. */
+function setHeaderName(workbook, sheetId, columnIndex, value) {
+  const next = {
+    ...workbook,
+    sheets: workbook.sheets.map((sheet) => {
+      if (sheet.id !== sheetId) return sheet
+      const columns = sheet.columns.map((column, index) => (index === columnIndex ? { ...column, name: value === '' ? columnId(index) : value } : column))
+      const coordinate = coordinateFor(columnIndex, HEADER_ROW)
+      const cells = { ...sheet.cells }
+      const nextMetadata = nextCellMetadata(cells[coordinate], undefined)
+      if (nextMetadata) cells[coordinate] = nextMetadata
+      else delete cells[coordinate]
+      return { ...sheet, columns, cells }
+    }),
+  }
+  return recalculateWorkbook(next)
 }
 
 /** Appends a blank row at the end of a sheet. Safe without formula-reference rewriting because
@@ -406,10 +356,10 @@ function rewriteFormulaRows(formula, targetSheetName, insertionRow, delta, delet
   if (!formula) return formula
   return formula.replace(CELL_REFERENCE_PATTERN, (match, sheetPrefix, colAnchor, column, rowAnchor, rowText) => {
     if (referencedSheetName(sheetPrefix, targetSheetName) !== targetSheetName) return match
-    const row = Number(rowText) - 1
+    const row = rowIndexFor(Number(rowText))
     if (deleting && row === insertionRow) return '#REF!'
     if (row < insertionRow) return match
-    return `${sheetPrefix || ''}${colAnchor}${column}${rowAnchor}${row + delta + 1}`
+    return `${sheetPrefix || ''}${colAnchor}${column}${rowAnchor}${rowNumberFor(row + delta)}`
   })
 }
 

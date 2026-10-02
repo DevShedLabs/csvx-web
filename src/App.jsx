@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import PrintView from './PrintView.jsx'
-import { columnWidthToPixels, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
+import { columnId, columnWidthToPixels, rowNumberFor, formatValue, loadWorkbookFromZip, resolveCellValue, validateBuffer, writeWorkbookToZip } from 'csvx-ts/browser'
 // loadWorkbookFromBuffer below intentionally calls loadWorkbookFromZip once, not
 // validateBuffer-then-loadWorkbookFromZip — validateBuffer (csvx-ts src/package.ts) just calls
 // loadWorkbookFromZip internally and classifies the thrown error, so calling both re-parses the
@@ -16,6 +16,8 @@ import {
   setPrintSettings,
   borderColorOf,
   cellMetadata,
+  rawCellText,
+  HEADER_ROW,
   clearCellsFormat,
   coordinateFor,
   deleteColumn,
@@ -104,7 +106,7 @@ function App() {
   const [workbook, setWorkbook] = useState(null)
   const [fileName, setFileName] = useState('')
   const [activeSheetId, setActiveSheetId] = useState(null)
-  const [selectedCell, setSelectedCell] = useState({ row: 0, column: 0 })
+  const [selectedCell, setSelectedCell] = useState({ row: HEADER_ROW, column: 0 })
   const [selectedCells, setSelectedCells] = useState(() => new Set(['A1']))
   const [selectedColumns, setSelectedColumns] = useState(() => new Set())
   const [selectedRows, setSelectedRows] = useState(() => new Set())
@@ -160,7 +162,9 @@ function App() {
   // reference instead.
   const stylesById = useMemo(() => new Map((workbook?.styles || []).map((style) => [style.id, style])), [workbook?.styles])
   const styleFor = (id) => stylesById.get(id) || {}
-  const totalRows = sheet?.records?.length || 0
+  // The header is row 1 of the grid, so the scroll window is over records + 1 rows; `g` below is a
+  // grid row (0 = header) and the record index is g - 1.
+  const totalRows = (sheet?.records?.length || 0) + 1
   const columnCount = sheet?.columns?.length || 0
   const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - ROW_OVERSCAN)
   const visibleRowCount = Math.ceil((viewportHeight || 0) / ROW_HEIGHT) + ROW_OVERSCAN * 2
@@ -169,7 +173,7 @@ function App() {
   const bottomSpacerHeight = (totalRows - endRow) * ROW_HEIGHT
   const selectedCoordinate = coordinateFor(selectedCell.column, selectedCell.row)
   const selectedMetadata = cellMetadata(sheet, selectedCoordinate)
-  const selectedRawValue = sheet?.records?.[selectedCell.row]?.[selectedCell.column] ?? ''
+  const selectedRawValue = rawCellText(sheet, selectedCell.row, selectedCell.column)
   const selectedStyle = styleFor(selectedMetadata?.style)
   const selectedAlignment = selectedStyle.alignment?.horizontal || ''
   // The resolved type (via the engine, same as the grid's own display logic) — never a raw
@@ -177,7 +181,7 @@ function App() {
   // from its literal text, per resolveCellValue) is exactly what the badge should communicate, not
   // just whatever happens to be explicitly declared. Hidden for a genuinely blank cell — showing
   // "blank" on every empty cell would just be noise.
-  const selectedDeclaredType = selectedMetadata?.type || sheet?.columns?.[selectedCell.column]?.type
+  const selectedDeclaredType = selectedMetadata?.type || (selectedCell.row < 0 ? 'string' : sheet?.columns?.[selectedCell.column]?.type)
   const selectedResolvedValue = selectedMetadata?.cached ?? resolveCellValue(selectedRawValue, selectedDeclaredType, selectedStyle.numberFormat)
   const selectedType = selectedResolvedValue.type === 'blank' ? '' : selectedResolvedValue.type
   const selectionStyles = useMemo(
@@ -326,7 +330,7 @@ function App() {
   function ensureRowVisible(rowIndex) {
     const el = tableScrollRef.current
     if (!el) return
-    const rowTop = rowIndex * ROW_HEIGHT
+    const rowTop = (rowIndex + 1) * ROW_HEIGHT
     const rowBottom = rowTop + ROW_HEIGHT
     let nextScrollTop = el.scrollTop
     if (rowTop < el.scrollTop) nextScrollTop = rowTop
@@ -356,8 +360,8 @@ function App() {
     setContextMenu(null)
   }
   function selectColumn(columnIndex, additive) {
-    const coordinates = sheet.records.map((_, rowIndex) => coordinateFor(columnIndex, rowIndex))
-    setSelectedCell({ row: 0, column: columnIndex })
+    const coordinates = [HEADER_ROW, ...sheet.records.map((_, rowIndex) => rowIndex)].map((rowIndex) => coordinateFor(columnIndex, rowIndex))
+    setSelectedCell({ row: HEADER_ROW, column: columnIndex })
     if (additive) {
       setSelectedCells((current) => new Set([...current, ...coordinates]))
       setSelectedColumns((current) => new Set(current).add(columnIndex))
@@ -369,7 +373,7 @@ function App() {
     setContextMenu(null)
   }
   function styleAt(row, column) {
-    if (row < 0 || column < 0 || row >= sheet.records.length || column >= sheet.columns.length) return undefined
+    if (row < HEADER_ROW || column < 0 || row >= sheet.records.length || column >= sheet.columns.length) return undefined
     return styleFor(cellMetadata(sheet, coordinateFor(column, row))?.style)
   }
   function neighborStyles(row, column) {
@@ -378,14 +382,14 @@ function App() {
   function displayAt(row, column) {
     const metadata = cellMetadata(sheet, coordinateFor(column, row))
     const style = styleFor(metadata?.style)
-    const declaredType = metadata?.type || sheet.columns[column]?.type
-    const cellValue = metadata?.cached ?? resolveCellValue(sheet.records[row]?.[column] || '', declaredType, style.numberFormat)
+    const declaredType = metadata?.type || (row < 0 ? 'string' : sheet.columns[column]?.type)
+    const cellValue = metadata?.cached ?? resolveCellValue(rawCellText(sheet, row, column), declaredType, style.numberFormat)
     return formatValue(cellValue, style.numberFormat)
   }
   function selectAll() {
     const coordinates = []
-    sheet.records.forEach((_, rowIndex) => sheet.columns.forEach((__, columnIndex) => coordinates.push(coordinateFor(columnIndex, rowIndex))))
-    setSelectedCell({ row: 0, column: 0 })
+    for (let rowIndex = HEADER_ROW; rowIndex < sheet.records.length; rowIndex += 1) sheet.columns.forEach((_, columnIndex) => coordinates.push(coordinateFor(columnIndex, rowIndex)))
+    setSelectedCell({ row: HEADER_ROW, column: 0 })
     setSelectedCells(new Set(coordinates))
     setSelectedColumns(new Set())
     setSelectedRows(new Set())
@@ -416,7 +420,7 @@ function App() {
     // cell itself holds the cache (spec/03-sheets.md), so sheet.records alone isn't the right
     // source once a formula is involved.
     const existingFormula = cellMetadata(sheet, coordinate)?.formula
-    setDraftValue(initialValue !== undefined ? initialValue : existingFormula ?? sheet.records[row]?.[column] ?? '')
+    setDraftValue(initialValue !== undefined ? initialValue : existingFormula ?? rawCellText(sheet, row, column))
     setEditingCell(coordinate)
     setEditingSource(source)
     setContextMenu(null)
@@ -438,7 +442,7 @@ function App() {
   }
   function moveSelection(direction) {
     const nextColumn = Math.max(0, Math.min(sheet.columns.length - 1, selectedCell.column + direction.column))
-    const nextRow = Math.max(0, Math.min(sheet.records.length - 1, selectedCell.row + direction.row))
+    const nextRow = Math.max(HEADER_ROW, Math.min(sheet.records.length - 1, selectedCell.row + direction.row))
     selectCell(nextRow, nextColumn)
   }
   function commitEditAndMove(direction) {
@@ -590,6 +594,8 @@ function App() {
   }
   function openRowContextMenu(event, rowIndex) {
     event.preventDefault()
+    // Row 1 is the header: it can't be inserted before or deleted, so it has no row menu.
+    if (rowIndex < 0) return
     selectRow(rowIndex, false)
     setContextMenu({ x: event.clientX, y: event.clientY, kind: 'row', index: rowIndex })
   }
@@ -846,7 +852,7 @@ function App() {
                         aria-label={`Select column ${column.name || column.id}`}
                         title={column.width ? `Width: ${column.width} (XLSX character-width units)` : undefined}
                       >
-                        {column.name || column.id}
+                        {columnId(index)}
                       </button>
                       <span className="column-resize-handle" onMouseDown={(e) => startColumnResize(e, index)} onClick={(e) => e.stopPropagation()} aria-hidden="true" />
                     </th>
@@ -862,18 +868,17 @@ function App() {
                     <td colSpan={sheet.columns.length + 2} style={{ padding: 0, border: 0 }} />
                   </tr>
                 )}
-                {sheet.records.slice(startRow, endRow).map((row, offset) => {
-                  const rowIndex = startRow + offset
+                {Array.from({ length: endRow - startRow }, (_, offset) => startRow + offset - 1).map((rowIndex) => {
                   return (
                   <tr key={rowIndex}>
                     <th scope="row" style={cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft ? { borderRight: cellBorderCSS(styleAt(rowIndex, 0), {}).borderLeft } : undefined} onContextMenu={(e) => openRowContextMenu(e, rowIndex)}>
-                      <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowIndex + 1}`}>
-                        {rowIndex + 1}
+                      <button type="button" className={`row-header-button ${selectedRows.has(rowIndex) ? 'is-active' : ''}`} onClick={(e) => selectRow(rowIndex, e.metaKey || e.ctrlKey)} aria-label={`Select row ${rowNumberFor(rowIndex)}`}>
+                        {rowNumberFor(rowIndex)}
                       </button>
                     </th>
                     {sheet.columns.slice(0, columnCount).map((_, columnIndex) => {
                       const coordinate = coordinateFor(columnIndex, rowIndex)
-                      const value = row[columnIndex] || ''
+                      const value = rawCellText(sheet, rowIndex, columnIndex)
                       const metadata = cellMetadata(sheet, coordinate)
                       const style = styleFor(metadata?.style)
                       // editingSource gates this: while editing via the formula bar, the grid cell
@@ -881,7 +886,7 @@ function App() {
                       const isEditing = editingCell === coordinate && editingSource === 'grid'
                       // formatValue is presentation-only (spec/08-styles.md) — it never changes what's
                       // stored, only how a formula's cached result or a plain typed value is shown.
-                      const declaredType = metadata?.type || sheet.columns[columnIndex]?.type
+                      const declaredType = metadata?.type || (rowIndex < 0 ? 'string' : sheet.columns[columnIndex]?.type)
                       const cellValue = metadata?.cached ?? resolveCellValue(value, declaredType, style.numberFormat)
                       const displayValue = formatValue(cellValue, style.numberFormat)
                       return (
@@ -1002,7 +1007,7 @@ function App() {
           </div>
         </nav>
         <div className="status-bar" role="status">
-          <strong>{sheet.records.length}</strong>&nbsp;rows · <strong>{sheet.columns.length}</strong>&nbsp;columns
+          <strong>{sheet.records.length + 1}</strong>&nbsp;rows · <strong>{sheet.columns.length}</strong>&nbsp;columns
         </div>
         <span className="footer-hint">Enter/F2 edit · Right-click a sheet tab for actions</span>
       </footer>
@@ -1015,7 +1020,7 @@ function App() {
       )}
       {contextMenu && contextMenu.kind === 'row' && (
         <div ref={contextMenuRef} className="row-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-          <p className="context-menu-label">Row {contextMenu.index + 1}</p>
+          <p className="context-menu-label">Row {rowNumberFor(contextMenu.index)}</p>
           <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index)}>Insert row before</button>
           <button type="button" role="menuitem" onClick={() => handleInsertRow(contextMenu.index + 1)}>Insert row after</button>
           <button type="button" role="menuitem" className="danger-action" onClick={() => handleDeleteRow(contextMenu.index)}>Delete row</button>
