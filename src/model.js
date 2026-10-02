@@ -205,9 +205,9 @@ export function applyTextCase(workbook, sheetId, coordinates, mode) {
     const { row, column } = indicesForCoordinate(coordinate)
     const meta = sheet.cells?.[coordinate]
     if (row < 0) {
-      // A header cell is a column name: always a string, whatever type the column below declares.
+      // The engine treats a header as a column name (always a string); see spec/05 "Text case".
       const column_ = columns[column]
-      if (column_) columns[column] = { ...column_, name: changeCase(column_.name ?? '', mode, { declaredType: 'string' }) }
+      if (column_) columns[column] = { ...column_, name: changeCase(column_.name ?? '', mode, { header: true }) }
     } else if (records[row] && column < records[row].length) {
       const declaredType = meta?.type || sheet.columns[column]?.type
       records[row][column] = changeCase(records[row][column], mode, { declaredType, formula: meta?.formula })
